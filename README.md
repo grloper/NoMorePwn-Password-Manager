@@ -13,7 +13,8 @@ vendor:
 
 - 🗄 **Local vault** — add, view, rotate credentials in a clean web UI (Streamlit + SQLite)
 - 🔑 **Zero-knowledge encryption** — Argon2id key derivation (PBKDF2-600k fallback) + AES-256-GCM per field; the master key never touches disk
-- ☁️ **Leak check via k-anonymity** — HaveIBeenPwned lookups that send only the first 5 characters of a SHA-1 hash; the password never leaves your machine
+- ☁️ **Multi-source leak check via k-anonymity** — passwords are checked against BOTH HaveIBeenPwned (5 SHA-1 hash chars sent) and XposedOrNot (10 Keccak-512 hash chars sent); breached if *any* corpus knows it, and a failed source is reported as "unchecked", never as "clean"
+- 📧 **Account exposure check (opt-in)** — catches breaches password corpora can't see (hashed, uncracked dumps) by asking whether your email appeared in any known breach; clearly labeled because it sends the full address, and supports an optional `HIBP_API_KEY` for HIBP's account API
 - 🛡 **MFA tracker** — per-account toggle with loud warnings for accounts missing MFA
 - 💪 **Strength calculator** — zxcvbn pattern-aware scoring, fully offline
 - 🕵️ **Tamper-evident history** — every password version checksummed (SHA-256) and GCM-authenticated; verified automatically at every unlock, with an "unchanged for N days" age metric

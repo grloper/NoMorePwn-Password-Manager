@@ -7,11 +7,15 @@ Security posture of this UI:
   memory) and is destroyed by the Lock button or a browser refresh.
 * Passwords are decrypted one at a time, only when you click Reveal.
 * The tamper-evidence sweep runs automatically at every unlock.
-* The only network call this app can make is the k-anonymity HIBP range
-  query (5 hash characters), and only when you click a leak-check button.
+* Network calls happen ONLY when you click a check button: k-anonymity
+  password lookups (5 SHA-1 chars to HIBP, 10 Keccak-512 chars to
+  XposedOrNot) and the clearly-labeled opt-in email exposure check.
 """
 
 from __future__ import annotations
+
+import os
+import time
 
 import streamlit as st
 
@@ -148,16 +152,33 @@ def render_credential(unlocked: vault.Vault, cred: dict) -> None:
                     st.rerun()
 
             if st.button("☁️ Check against known breaches", key=f"leak_{cred['id']}",
-                         help="k-anonymity: only 5 characters of a SHA-1 hash are sent."):
+                         help="k-anonymity across multiple corpora: only short hash "
+                              "prefixes are sent (5 SHA-1 chars to HIBP, 10 Keccak-512 "
+                              "chars to XposedOrNot)."):
                 try:
-                    count = leakcheck.check_password(unlocked.reveal_password(cred["id"]))
+                    result = leakcheck.check_password(unlocked.reveal_password(cred["id"]))
                 except leakcheck.LeakCheckError as exc:
                     st.error(str(exc))
                 else:
-                    if count:
-                        st.error(f"🚨 Found in {count:,} breaches — change this password NOW.")
+                    if result.breached:
+                        st.error(
+                            f"🚨 Found in known breaches (worst source: "
+                            f"{result.worst_count:,} occurrences) — change this password NOW."
+                        )
                     else:
-                        st.success("Not found in any known breach.")
+                        st.success("Not found in any corpus checked below.")
+                    for source, count in result.sources.items():
+                        if count is None:
+                            st.caption(f"❔ {source}: check failed")
+                        elif count:
+                            st.caption(f"🚨 {source}: {count:,} occurrences")
+                        else:
+                            st.caption(f"✅ {source}: not found")
+                    st.caption(
+                        "ℹ️ Corpora only contain passwords dumped in crackable form. "
+                        "A breached account's password can be absent — check your "
+                        "email's exposure in the Security audit tab too."
+                    )
 
         with right:
             with st.form(f"update_{cred['id']}"):
@@ -235,21 +256,36 @@ def tab_audit(unlocked: vault.Vault) -> None:
 
     st.divider()
     st.subheader("Breach + strength sweep")
+    source_names = [name for name, _ in leakcheck.password_sources()]
     st.caption(
-        "Checks every password against HaveIBeenPwned via k-anonymity "
-        "(5 hash characters sent per password) and scores strength locally."
+        f"Checks every password against {len(source_names)} corpora "
+        f"({', '.join(source_names)}) via k-anonymity — only short hash "
+        "prefixes leave this machine — and scores strength locally."
     )
     if st.button("Run full audit", type="primary"):
         progress = st.progress(0.0)
         rows = []
         for i, cred in enumerate(creds):
+            if i:
+                time.sleep(0.6)  # stay under XposedOrNot's 2 req/s free tier
             password = unlocked.reveal_password(cred["id"])
             score = strength.evaluate(password)
             try:
-                breaches = leakcheck.check_password(password)
-                breach_text = f"🚨 {breaches:,}× breached" if breaches else "✅ clean"
+                result = leakcheck.check_password(password)
             except leakcheck.LeakCheckError:
                 breach_text = "❔ check failed (offline?)"
+            else:
+                parts = []
+                for source, count in result.sources.items():
+                    short = source.split()[0]  # "HIBP", "XposedOrNot"
+                    if count is None:
+                        parts.append(f"{short}: ❔")
+                    elif count:
+                        parts.append(f"{short}: {count:,}×")
+                if result.breached:
+                    breach_text = "🚨 " + ", ".join(parts)
+                else:
+                    breach_text = f"✅ clean ({len(result.sources)} sources)"
             rows.append({
                 "Service": cred["service_name"],
                 "Username": cred["username"],
@@ -260,6 +296,52 @@ def tab_audit(unlocked: vault.Vault) -> None:
             })
             progress.progress((i + 1) / len(creds))
         st.dataframe(rows, use_container_width=True)
+
+    st.divider()
+    st.subheader("📧 Account (email) breach exposure")
+    emails = sorted({c["username"] for c in creds if "@" in c["username"]})
+    if not emails:
+        st.caption("No email-style usernames in the vault yet.")
+    else:
+        st.caption(
+            "Password corpora miss breaches where the password dump was hashed "
+            "and never cracked. This check asks a different question: *has this "
+            "email appeared in any known breach at all?*"
+        )
+        st.warning(
+            "⚠️ Privacy tradeoff: unlike password checks, this sends the FULL "
+            "email address to XposedOrNot" +
+            (" and HaveIBeenPwned" if os.environ.get("HIBP_API_KEY") else "") +
+            ". Nothing runs until you click. "
+            "(Optional: set HIBP_API_KEY to also query HIBP's account API.)"
+        )
+        if st.button(f"Check {len(emails)} email address(es)"):
+            hibp_key = os.environ.get("HIBP_API_KEY")
+            for i, email in enumerate(emails):
+                if i:
+                    time.sleep(0.6)
+                try:
+                    exposure = leakcheck.check_email_exposure(email, hibp_api_key=hibp_key)
+                except leakcheck.LeakCheckError as exc:
+                    st.error(f"{email}: {exc}")
+                    continue
+                if exposure.exposed:
+                    names = ", ".join(
+                        b["name"] for b in exposure.breaches[:15]
+                    ) + ("…" if len(exposure.breaches) > 15 else "")
+                    st.error(
+                        f"🚨 **{email}** appears in {len(exposure.breaches)} "
+                        f"breach(es): {names}"
+                    )
+                    st.caption(
+                        "Rotate the passwords for these services even if the "
+                        "password corpora above show them as clean."
+                    )
+                else:
+                    st.success(
+                        f"✅ {email}: no known breach exposure "
+                        f"(checked: {', '.join(exposure.sources_checked)})"
+                    )
 
     st.divider()
     if st.button("Re-run tamper check"):
@@ -283,8 +365,9 @@ def main() -> None:
             do_lock()
             st.rerun()
         st.caption(
-            "Local-first: nothing leaves this machine except 5-character "
-            "hash prefixes during opt-in breach checks."
+            "Local-first: nothing leaves this machine except short hash "
+            "prefixes during opt-in breach checks (and full emails only in "
+            "the clearly-marked email exposure check)."
         )
 
     banner_integrity()

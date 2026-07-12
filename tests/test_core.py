@@ -6,16 +6,20 @@ Run with:  python -m unittest discover tests -v
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import crypto, strength, validation, vault
+import requests
+
+from nomorepwn import crypto, leakcheck, strength, validation, vault
 from nomorepwn import db as db_layer
 
 MASTER = "correct horse battery staple 42"
@@ -209,6 +213,103 @@ class SqlInjectionPolicyTests(unittest.TestCase):
         self.assertIsNone(re.search(r"%\s*\(", source))
         self.assertIsNone(re.search(r"\.format\(", source))
         self.assertIsNone(re.search(r'"\s*\+\s*\w+\s*\+\s*"', source))
+
+
+def _fake_response(status_code=200, text="", json_data=None):
+    response = mock.Mock()
+    response.status_code = status_code
+    response.text = text
+    response.json.return_value = json_data
+    if status_code >= 400:
+        response.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status_code}")
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
+class LeakCheckTests(unittest.TestCase):
+    """All HTTP is mocked — the test suite never touches the network."""
+
+    PASSWORD = "hunter2"
+
+    def _hibp_body(self, count: int) -> str:
+        suffix = hashlib.sha1(self.PASSWORD.encode()).hexdigest().upper()[5:]
+        return f"0000000000000000000000000000000000A:0\r\n{suffix}:{count}"
+
+    def test_hibp_found_and_padding_ignored(self):
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(text=self._hibp_body(42))):
+            self.assertEqual(leakcheck.check_password_hibp(self.PASSWORD), 42)
+
+    def test_hibp_not_found(self):
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(text="AAAAAAA:5")):
+            self.assertEqual(leakcheck.check_password_hibp(self.PASSWORD), 0)
+
+    @unittest.skipUnless(leakcheck.HAS_KECCAK, "pycryptodome not installed")
+    def test_xon_found(self):
+        body = {"SearchPassAnon": {"count": "1590937", "anon": "x", "char": "", "wordlist": 0}}
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(json_data=body)):
+            self.assertEqual(leakcheck.check_password_xon(self.PASSWORD), 1590937)
+
+    @unittest.skipUnless(leakcheck.HAS_KECCAK, "pycryptodome not installed")
+    def test_xon_not_found_is_404(self):
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(status_code=404)):
+            self.assertEqual(leakcheck.check_password_xon(self.PASSWORD), 0)
+
+    @unittest.skipUnless(leakcheck.HAS_KECCAK, "pycryptodome not installed")
+    def test_aggregate_breached_if_any_source_hits(self):
+        """One corpus knowing the password is enough — this is the fix for
+        single-corpus false negatives."""
+        def fake_get(url, **kwargs):
+            if "pwnedpasswords.com" in url:
+                return _fake_response(text="NOMATCH:1")          # HIBP: clean
+            return _fake_response(json_data={"SearchPassAnon": {"count": "7"}})
+        with mock.patch.object(leakcheck.requests, "get", side_effect=fake_get):
+            result = leakcheck.check_password(self.PASSWORD)
+        self.assertTrue(result.breached)
+        self.assertEqual(result.worst_count, 7)
+        self.assertEqual(result.sources["HIBP Pwned Passwords"], 0)
+        self.assertEqual(result.sources["XposedOrNot"], 7)
+
+    @unittest.skipUnless(leakcheck.HAS_KECCAK, "pycryptodome not installed")
+    def test_aggregate_survives_one_source_failure(self):
+        def fake_get(url, **kwargs):
+            if "pwnedpasswords.com" in url:
+                return _fake_response(text=self._hibp_body(9))
+            raise requests.ConnectionError("xon down")
+        with mock.patch.object(leakcheck.requests, "get", side_effect=fake_get):
+            result = leakcheck.check_password(self.PASSWORD)
+        self.assertTrue(result.breached)
+        self.assertIsNone(result.sources["XposedOrNot"])
+        self.assertTrue(result.errors)
+
+    def test_aggregate_raises_when_all_sources_fail(self):
+        with mock.patch.object(leakcheck.requests, "get",
+                               side_effect=requests.ConnectionError("offline")):
+            with self.assertRaises(leakcheck.LeakCheckError):
+                leakcheck.check_password(self.PASSWORD)
+
+    def test_email_exposure_found(self):
+        body = {"breaches": [["LinkedIn", "Adobe"]], "email": "a@b.com"}
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(json_data=body)):
+            result = leakcheck.check_email_exposure("a@b.com")
+        self.assertTrue(result.exposed)
+        self.assertEqual([b["name"] for b in result.breaches], ["Adobe", "LinkedIn"])
+
+    def test_email_exposure_clean(self):
+        with mock.patch.object(leakcheck.requests, "get",
+                               return_value=_fake_response(status_code=404)):
+            result = leakcheck.check_email_exposure("a@b.com")
+        self.assertFalse(result.exposed)
+        self.assertIn("XposedOrNot", result.sources_checked)
+
+    def test_email_exposure_rejects_non_email(self):
+        with self.assertRaises(leakcheck.LeakCheckError):
+            leakcheck.check_email_exposure("not-an-email")
 
 
 class StrengthTests(unittest.TestCase):

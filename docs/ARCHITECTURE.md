@@ -119,24 +119,46 @@ days"** metric and the stale-password audit (warn at 180 days).
    `x'; DROP TABLE credentials; --` are doubly inert: bound as
    parameters *and* opaque ciphertext.
 
-## 6. Leak checking with k-anonymity
+## 6. Leak checking: multi-source k-anonymity + account exposure
+
+**Why multiple sources.** A password corpus only contains passwords
+that were dumped in plaintext or cracked form. Your account can be in
+a breach while your exact password string never enters any one corpus —
+a single-source check produces false "clean" verdicts. NoMorePwn
+therefore checks every available corpus and flags a password if **any**
+source knows it, and separately offers account-level exposure checks.
+
+### Password corpora (k-anonymity — hash prefixes only)
+
+| Source | Hash (computed locally) | Sent over the wire | Match happens |
+|---|---|---|---|
+| HIBP Pwned Passwords | SHA-1 (40 hex chars) | first **5** chars + `Add-Padding` | locally |
+| XposedOrNot | Keccak-512 (128 hex chars) | first **10** chars | remotely by bucket, result verified locally |
 
 ```
-password ──SHA-1 (local)──▶ 21BD1...  (40 hex chars)
-                             └──┬──┘
-             first 5 chars ─────┘  ONLY these leave the machine
-                     │
-                     ▼
-   GET https://api.pwnedpasswords.com/range/21BD1   (+ Add-Padding header)
-                     │
-                     ▼
-   ~800-1000 breached suffixes with counts, compared LOCALLY
+password ──SHA-1 (local)──▶ 21BD1...   ──▶ 5 chars  ──▶ api.pwnedpasswords.com/range/
+         ──Keccak-512 (local)─▶ a6818b8188... ──▶ 10 chars ──▶ passwords.xposedornot.com/api/v1/pass/anon/
+                                    │
+                                    ▼
+     verdict = breached if ANY corpus reports the password
+     (a source that can't be reached is reported as "unchecked",
+      never silently treated as "clean")
 ```
-HIBP never sees the password, its full hash, or whether anything
-matched — each prefix bucket contains hundreds of unrelated hashes
-(that's the *k* in k-anonymity). The `Add-Padding` header makes HIBP
-pad responses so response length can't fingerprint the bucket either.
-Checks run only when you click the button — never automatically.
+Neither service ever sees the password or its full hash — each prefix
+bucket contains many unrelated candidates (the *k* in k-anonymity).
+
+### Account (email) exposure — opt-in, different privacy contract
+
+`check_email_exposure()` asks: *has this email appeared in any breach
+at all?* This catches breaches where the password dump was hashed and
+never cracked (invisible to every password corpus). **Tradeoff:** the
+FULL email address is sent to XposedOrNot (free) and, if you set
+`HIBP_API_KEY`, to HIBP's breachedaccount API (paid). Because that is
+not anonymized, the UI gates it behind a clearly-labeled button with a
+privacy warning — it never runs automatically. Free-tier rate limits
+apply (XposedOrNot: ~2 req/s, 25 email checks/hour).
+
+All checks run only when you click — never in the background.
 
 ## 7. Zero-knowledge backup / sync strategy
 
@@ -167,7 +189,8 @@ Automating this later is a cron job around `export` — no code changes.
 | DB edited outside the app | Launch-time sweep: SHA-256 checksums + history cross-check + GCM tags |
 | Ciphertext swapped between rows | Per-row AAD binding fails GCM authentication |
 | SQL injection | Parameterized-only DB layer + allowlist validation + policy test |
-| Password exposure during leak check | k-anonymity: 5 hash chars out, comparison local, padded responses |
+| Password exposure during leak check | k-anonymity: 5–10 hash chars out, comparison local, padded responses |
+| Single-corpus false negatives ("clean" but actually breached) | Multi-source aggregation (HIBP + XposedOrNot) + opt-in account-level email exposure check |
 | Shoulder surfing | Passwords masked by default; per-item, on-demand Reveal |
 
 **Out of scope (v0.1):** malware/keyloggers on the host (no software

@@ -5,4 +5,5 @@ streamlit>=1.35        # local browser dashboard (binds to localhost)
 cryptography>=42.0     # AES-256-GCM authenticated encryption
 argon2-cffi>=23.1      # Argon2id key derivation (preferred KDF)
 zxcvbn>=4.4.28         # pattern-aware local password strength estimation
-requests>=2.32         # HIBP k-anonymity range queries (5 hash chars only)
+requests>=2.32         # k-anonymity breach queries (hash prefixes only)
+pycryptodome>=3.20     # Keccak-512 for XposedOrNot k-anonymity checks

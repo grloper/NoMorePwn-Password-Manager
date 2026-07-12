@@ -55,12 +55,20 @@ def detect_delimiter(lines: list[str]) -> str | None:
     return best_name if best_hits > len(lines) / 2 else None
 
 
-def parse_line(line: str, delim: str) -> tuple[str, str, str]:
-    """Split into (service, username, password). Password keeps delimiters."""
+def parse_line(line: str, delim: str, keep_whitespace: bool) -> tuple[str, str, str]:
+    """Split into (service, username, password). Password keeps delimiters.
+
+    The password field is stripped by default: notepad formatting like
+    "service, user, pass" would otherwise import " pass", which is both
+    the wrong password AND hashes differently during breach checks —
+    a silent false negative. --keep-whitespace disables stripping for
+    passwords that genuinely start/end with spaces.
+    """
     parts = line.split(delim, 2)  # maxsplit=2: password may contain the delimiter
     if len(parts) != 3:
         raise ValidationError("Line does not have three delimited fields.")
-    return parts[0].strip(), parts[1].strip(), parts[2]
+    password = parts[2] if keep_whitespace else parts[2].strip()
+    return parts[0].strip(), parts[1].strip(), password
 
 
 def main() -> int:
@@ -75,6 +83,12 @@ def main() -> int:
         help="Field delimiter (default: auto-detect).",
     )
     parser.add_argument("--db", default=str(config.DB_PATH), help="Vault file location.")
+    parser.add_argument(
+        "--keep-whitespace",
+        action="store_true",
+        help="Keep leading/trailing whitespace in password fields "
+             "(default: stripped, since it's almost always notepad formatting).",
+    )
     args = parser.parse_args()
 
     source = Path(args.file)
@@ -119,7 +133,7 @@ def main() -> int:
     imported, skipped = 0, []
     for num, line in data_lines:
         try:
-            service, username, password = parse_line(line, delim)
+            service, username, password = parse_line(line, delim, args.keep_whitespace)
             unlocked.add_credential(service, username, password)
             imported += 1
         except vault.DuplicateCredentialError:

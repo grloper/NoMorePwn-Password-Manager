@@ -158,6 +158,30 @@ not anonymized, the UI gates it behind a clearly-labeled button with a
 privacy warning — it never runs automatically. Free-tier rate limits
 apply (XposedOrNot: ~2 req/s, 25 email checks/hour).
 
+### False-negative hardening
+
+Two failure modes can make a *breached* password report as clean, and
+both are handled explicitly:
+
+1. **Corrupted stored copy.** Corpora hash the password byte-for-byte;
+   a stored string that differs from the real password by one invisible
+   character (trailing space from an import, non-breaking space or
+   zero-width char from a paste, NFD-decomposed accents from macOS)
+   hashes to a different value entirely. Every check therefore also
+   analyzes the string for these anomalies and additionally queries
+   cleaned-up variants (whitespace-trimmed, invisible-chars-removed,
+   NFC-normalized). "Stored copy clean, trimmed variant breached 648×"
+   is reported as a full alarm, not a clean bill.
+2. **Intercepted responses.** A corporate proxy or captive portal that
+   returns HTML with HTTP 200 would previously parse as "no match".
+   Response bodies are now format-validated (every HIBP line must match
+   `^[0-9A-F]{35}:\d+$`); anything else raises an error and the verdict
+   is withheld — "couldn't check" is never conflated with "clean".
+
+The audit tab also has an **ad-hoc checker**: paste any password (it is
+checked, never stored) to cross-verify against haveibeenpwned.com
+through the identical pipeline.
+
 All checks run only when you click — never in the background.
 
 ## 7. Zero-knowledge backup / sync strategy

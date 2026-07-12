@@ -94,6 +94,61 @@ def screen_unlock() -> None:
 # Main dashboard
 # ---------------------------------------------------------------------------
 
+def render_breach_check(password: str) -> None:
+    """Thorough breach check + false-negative diagnostics for one password."""
+    try:
+        results = leakcheck.check_password_thorough(password)
+    except leakcheck.LeakCheckError as exc:
+        st.error(str(exc))
+        return
+
+    stored = results["as stored"]
+    any_breached = any(r.breached for r in results.values())
+    if stored.breached:
+        st.error(
+            f"🚨 Found in known breaches (worst source: "
+            f"{stored.worst_count:,} occurrences) — change this password NOW."
+        )
+    elif not any_breached:
+        st.success("Not found in any corpus checked below.")
+    for source, count in stored.sources.items():
+        if count is None:
+            st.caption(f"❔ {source}: check failed")
+        elif count:
+            st.caption(f"🚨 {source}: {count:,} occurrences")
+        else:
+            st.caption(f"✅ {source}: not found")
+
+    anomalies = leakcheck.password_anomalies(password)
+    if anomalies:
+        st.warning(
+            "⚠️ This password contains: " + "; ".join(anomalies) + ". "
+            "Breach corpora hash the string byte-for-byte, so a single "
+            "invisible character makes a breached password look clean. "
+            "Cleaned-up variants were checked too:"
+        )
+    for label, result in results.items():
+        if label == "as stored":
+            continue
+        if result.breached:
+            st.error(
+                f"🚨 The **{label}** variant of this password IS breached "
+                f"({result.worst_count:,} occurrences). The stored copy differs "
+                "only by invisible characters — almost certainly an import or "
+                "paste artifact. Re-save the credential with the intended "
+                "password, then rotate it on the service."
+            )
+        else:
+            st.caption(f"✅ {label} variant: also not found")
+
+    if not any_breached:
+        st.caption(
+            "ℹ️ Corpora only contain passwords dumped in crackable form. "
+            "A breached account's password can be absent — check your "
+            "email's exposure in the Security audit tab too."
+        )
+
+
 def banner_integrity() -> None:
     issues = st.session_state.get("integrity_issues")
     if issues is None:
@@ -154,31 +209,9 @@ def render_credential(unlocked: vault.Vault, cred: dict) -> None:
             if st.button("☁️ Check against known breaches", key=f"leak_{cred['id']}",
                          help="k-anonymity across multiple corpora: only short hash "
                               "prefixes are sent (5 SHA-1 chars to HIBP, 10 Keccak-512 "
-                              "chars to XposedOrNot)."):
-                try:
-                    result = leakcheck.check_password(unlocked.reveal_password(cred["id"]))
-                except leakcheck.LeakCheckError as exc:
-                    st.error(str(exc))
-                else:
-                    if result.breached:
-                        st.error(
-                            f"🚨 Found in known breaches (worst source: "
-                            f"{result.worst_count:,} occurrences) — change this password NOW."
-                        )
-                    else:
-                        st.success("Not found in any corpus checked below.")
-                    for source, count in result.sources.items():
-                        if count is None:
-                            st.caption(f"❔ {source}: check failed")
-                        elif count:
-                            st.caption(f"🚨 {source}: {count:,} occurrences")
-                        else:
-                            st.caption(f"✅ {source}: not found")
-                    st.caption(
-                        "ℹ️ Corpora only contain passwords dumped in crackable form. "
-                        "A breached account's password can be absent — check your "
-                        "email's exposure in the Security audit tab too."
-                    )
+                              "chars to XposedOrNot). Also checks cleaned-up variants "
+                              "to catch invisible-character false negatives."):
+                render_breach_check(unlocked.reveal_password(cred["id"]))
 
         with right:
             with st.form(f"update_{cred['id']}"):
@@ -270,8 +303,22 @@ def tab_audit(unlocked: vault.Vault) -> None:
                 time.sleep(0.6)  # stay under XposedOrNot's 2 req/s free tier
             password = unlocked.reveal_password(cred["id"])
             score = strength.evaluate(password)
+            anomalies = leakcheck.password_anomalies(password)
             try:
-                result = leakcheck.check_password(password)
+                # Anomalous passwords (stray whitespace, invisible chars) get
+                # the thorough variant check — a corrupted copy of a breached
+                # password must not sail through the sweep as "clean".
+                if anomalies:
+                    thorough = leakcheck.check_password_thorough(password)
+                    result = thorough["as stored"]
+                    variant_hit = next(
+                        ((label, r) for label, r in thorough.items()
+                         if label != "as stored" and r.breached),
+                        None,
+                    )
+                else:
+                    result = leakcheck.check_password(password)
+                    variant_hit = None
             except leakcheck.LeakCheckError:
                 breach_text = "❔ check failed (offline?)"
             else:
@@ -284,6 +331,11 @@ def tab_audit(unlocked: vault.Vault) -> None:
                         parts.append(f"{short}: {count:,}×")
                 if result.breached:
                     breach_text = "🚨 " + ", ".join(parts)
+                elif variant_hit:
+                    breach_text = (
+                        f"🚨 breached as {variant_hit[0]} "
+                        f"({variant_hit[1].worst_count:,}×)"
+                    )
                 else:
                     breach_text = f"✅ clean ({len(result.sources)} sources)"
             rows.append({
@@ -293,9 +345,29 @@ def tab_audit(unlocked: vault.Vault) -> None:
                 "Breaches": breach_text,
                 "MFA": "🛡️" if cred["mfa_enabled"] else "⚠️ off",
                 "Age (days)": cred["age_days"],
+                "Notes": "⚠️ " + "; ".join(anomalies) if anomalies else "",
             })
             progress.progress((i + 1) / len(creds))
         st.dataframe(rows, use_container_width=True)
+        st.caption(
+            "A 🚨 'breached as …' verdict means the stored password is a "
+            "corrupted copy (invisible characters) of a breached password — "
+            "open the credential in the Vault tab for details."
+        )
+
+    st.divider()
+    st.subheader("🔎 Check any password")
+    st.caption(
+        "Paste a password to run it through the exact same pipeline — it is "
+        "checked, never stored. Useful to cross-verify a result against "
+        "haveibeenpwned.com/Passwords: if the website says pwned and this "
+        "says clean, the string you stored differs from the one you tested "
+        "(the diagnostics below will say how)."
+    )
+    with st.form("adhoc_check"):
+        adhoc_password = st.text_input("Password to check", type="password", max_chars=1024)
+        if st.form_submit_button("Check") and adhoc_password:
+            render_breach_check(adhoc_password)
 
     st.divider()
     st.subheader("📧 Account (email) breach exposure")

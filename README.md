@@ -14,6 +14,7 @@ vendor:
 - 🗄 **Local vault** — add, view, rotate credentials in a clean web UI (Streamlit + SQLite)
 - 🔑 **Zero-knowledge encryption** — Argon2id key derivation (PBKDF2-600k fallback) + AES-256-GCM per field; the master key never touches disk
 - ☁️ **Multi-source leak check via k-anonymity** — passwords are checked against BOTH HaveIBeenPwned (5 SHA-1 hash chars sent) and XposedOrNot (10 Keccak-512 hash chars sent); breached if *any* corpus knows it, and a failed source is reported as "unchecked", never as "clean"
+- 🔬 **False-negative diagnostics** — detects invisible-character corruption (stray whitespace, non-breaking/zero-width chars, NFD accents) and checks cleaned-up variants too, so a mangled copy of a breached password can't sail through as "clean"; API responses are format-validated so an intercepting proxy raises an error instead of a false negative
 - 📧 **Account exposure check (opt-in)** — catches breaches password corpora can't see (hashed, uncracked dumps) by asking whether your email appeared in any known breach; clearly labeled because it sends the full address, and supports an optional `HIBP_API_KEY` for HIBP's account API
 - 🛡 **MFA tracker** — per-account toggle with loud warnings for accounts missing MFA
 - 💪 **Strength calculator** — zxcvbn pattern-aware scoring, fully offline

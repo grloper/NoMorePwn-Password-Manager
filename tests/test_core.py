@@ -242,9 +242,19 @@ class LeakCheckTests(unittest.TestCase):
             self.assertEqual(leakcheck.check_password_hibp(self.PASSWORD), 42)
 
     def test_hibp_not_found(self):
+        body = "A" * 35 + ":5"  # valid range line, non-matching suffix
         with mock.patch.object(leakcheck.requests, "get",
-                               return_value=_fake_response(text="AAAAAAA:5")):
+                               return_value=_fake_response(text=body)):
             self.assertEqual(leakcheck.check_password_hibp(self.PASSWORD), 0)
+
+    def test_hibp_intercepted_response_raises(self):
+        """A proxy/captive portal returning HTML with HTTP 200 must be an
+        error — never a false 'clean' verdict."""
+        for junk in ("<html>Sign in to continue</html>", ""):
+            with mock.patch.object(leakcheck.requests, "get",
+                                   return_value=_fake_response(text=junk)):
+                with self.assertRaises(leakcheck.LeakCheckError):
+                    leakcheck.check_password_hibp(self.PASSWORD)
 
     @unittest.skipUnless(leakcheck.HAS_KECCAK, "pycryptodome not installed")
     def test_xon_found(self):
@@ -265,7 +275,7 @@ class LeakCheckTests(unittest.TestCase):
         single-corpus false negatives."""
         def fake_get(url, **kwargs):
             if "pwnedpasswords.com" in url:
-                return _fake_response(text="NOMATCH:1")          # HIBP: clean
+                return _fake_response(text="A" * 35 + ":1")      # HIBP: clean
             return _fake_response(json_data={"SearchPassAnon": {"count": "7"}})
         with mock.patch.object(leakcheck.requests, "get", side_effect=fake_get):
             result = leakcheck.check_password(self.PASSWORD)
@@ -310,6 +320,45 @@ class LeakCheckTests(unittest.TestCase):
     def test_email_exposure_rejects_non_email(self):
         with self.assertRaises(leakcheck.LeakCheckError):
             leakcheck.check_email_exposure("not-an-email")
+
+
+class FalseNegativeDiagnosticsTests(unittest.TestCase):
+    """Invisible-character corruption must never produce a quiet 'clean'."""
+
+    def test_anomalies_detected(self):
+        self.assertIn("leading/trailing whitespace",
+                      leakcheck.password_anomalies("hunter2 "))
+        self.assertTrue(any("non-breaking space" in note
+                            for note in leakcheck.password_anomalies("hunter\u00a02")))
+        self.assertTrue(any("zero-width" in note
+                            for note in leakcheck.password_anomalies("hun\u200bter2")))
+        # NFD-decomposed accent (macOS paste artifact): 'e' + combining acute
+        self.assertTrue(any("NFC" in note
+                            for note in leakcheck.password_anomalies("cafe\u0301")))
+        self.assertEqual(leakcheck.password_anomalies("clean-password"), [])
+
+    def test_variants_include_trimmed(self):
+        variants = leakcheck.password_variants(" hunter2\t")
+        self.assertEqual(variants["as stored"], " hunter2\t")
+        self.assertEqual(variants["whitespace-trimmed"], "hunter2")
+
+    def test_clean_password_has_single_variant(self):
+        self.assertEqual(list(leakcheck.password_variants("hunter2")), ["as stored"])
+
+    def test_thorough_check_flags_breached_variant(self):
+        """Stored ' hunter2' clean, trimmed 'hunter2' breached 648x —
+        the user-reported scenario."""
+        def fake_check(password, timeout=leakcheck.DEFAULT_TIMEOUT):
+            count = 648 if password == "hunter2" else 0
+            return leakcheck.PasswordLeakResult(
+                breached=count > 0, worst_count=count,
+                sources={"HIBP Pwned Passwords": count},
+            )
+        with mock.patch.object(leakcheck, "check_password", side_effect=fake_check):
+            results = leakcheck.check_password_thorough(" hunter2")
+        self.assertFalse(results["as stored"].breached)
+        self.assertTrue(results["whitespace-trimmed"].breached)
+        self.assertEqual(results["whitespace-trimmed"].worst_count, 648)
 
 
 class StrengthTests(unittest.TestCase):

@@ -31,6 +31,8 @@ The raw password never leaves the machine under any code path.
 from __future__ import annotations
 
 import hashlib
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 import requests
@@ -88,6 +90,10 @@ class EmailExposureResult:
 # Password corpora (k-anonymity — only hash prefixes leave the machine)
 # ---------------------------------------------------------------------------
 
+# A genuine HIBP range line: 35 hex chars of hash suffix, colon, count.
+_HIBP_LINE_RE = re.compile(r"^[0-9A-F]{35}:\d+$")
+
+
 def check_password_hibp(password: str, timeout: int = DEFAULT_TIMEOUT) -> int:
     """HIBP Pwned Passwords range query. 5 SHA-1 hex chars sent."""
     sha1 = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
@@ -103,10 +109,19 @@ def check_password_hibp(password: str, timeout: int = DEFAULT_TIMEOUT) -> int:
     except requests.RequestException as exc:
         raise LeakCheckError(f"HIBP range query failed: {exc}") from exc
 
-    for line in response.text.splitlines():
+    lines = [line.strip() for line in response.text.splitlines() if line.strip()]
+    # A corporate proxy or captive portal returning HTML with HTTP 200 must
+    # surface as an ERROR, never as a false "clean" verdict.
+    if not lines or not all(_HIBP_LINE_RE.match(line) for line in lines):
+        raise LeakCheckError(
+            "HIBP returned an unrecognized response body — something (proxy, "
+            "captive portal) may be intercepting the request. Verdict withheld."
+        )
+
+    for line in lines:
         candidate, _, count = line.partition(":")
-        if candidate.strip() == suffix:
-            occurrences = int(count.strip() or 0)
+        if candidate == suffix:
+            occurrences = int(count)
             # Padding entries are returned with a count of 0 — not real hits.
             return occurrences if occurrences > 0 else 0
     return 0
@@ -176,6 +191,76 @@ def check_password(password: str, timeout: int = DEFAULT_TIMEOUT) -> PasswordLea
         sources=sources,
         errors=errors,
     )
+
+
+# ---------------------------------------------------------------------------
+# False-negative diagnostics: invisible characters & Unicode form
+#
+# Breach corpora hash the password byte-for-byte. A stored copy that
+# differs from the "real" password by a single invisible character —
+# a trailing space from a notepad import, a non-breaking space from a
+# paste, an NFD-composed accent from macOS — hashes to a completely
+# different value and reports as clean even though the real password
+# is breached. These helpers surface such near-miss variants.
+# ---------------------------------------------------------------------------
+
+_INVISIBLE_CHARS = {
+    "\u00a0": "non-breaking space",
+    "\u200b": "zero-width space",
+    "\u200c": "zero-width non-joiner",
+    "\u200d": "zero-width joiner",
+    "\u2060": "word joiner",
+    "\ufeff": "byte-order mark",
+}
+
+
+def password_anomalies(password: str) -> list[str]:
+    """Human-readable red flags that make breach checks silently miss."""
+    notes = []
+    if password != password.strip():
+        notes.append("leading/trailing whitespace")
+    for char, label in _INVISIBLE_CHARS.items():
+        if char in password:
+            notes.append(f"{label} (U+{ord(char):04X})")
+    if unicodedata.normalize("NFC", password) != password:
+        notes.append("non-NFC Unicode form (e.g. macOS decomposed accents)")
+    return notes
+
+
+def password_variants(password: str) -> dict[str, str]:
+    """The stored string plus cleaned-up variants worth checking too."""
+    variants = {"as stored": password}
+
+    stripped = password.strip()
+    if stripped and stripped != password:
+        variants["whitespace-trimmed"] = stripped
+
+    cleaned = stripped or password
+    for char in _INVISIBLE_CHARS:
+        cleaned = cleaned.replace(char, "")
+    if cleaned and cleaned not in variants.values():
+        variants["invisible-chars-removed"] = cleaned
+
+    nfc = unicodedata.normalize("NFC", password)
+    if nfc not in variants.values():
+        variants["NFC-normalized"] = nfc
+
+    return variants
+
+
+def check_password_thorough(
+    password: str, timeout: int = DEFAULT_TIMEOUT
+) -> dict[str, PasswordLeakResult]:
+    """Check the stored string AND its anomaly-corrected variants.
+
+    If "as stored" is clean but "whitespace-trimmed" is breached, the
+    vault almost certainly holds a corrupted copy of a breached
+    password — the UI treats that as a full alarm, not a clean bill.
+    """
+    return {
+        label: check_password(variant, timeout)
+        for label, variant in password_variants(password).items()
+    }
 
 
 # ---------------------------------------------------------------------------

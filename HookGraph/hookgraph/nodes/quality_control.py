@@ -25,7 +25,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from ..analysis import is_punchy_opening
-from ..state import HookCandidate, QCReport, QCViolation, VidioFlexState
+from ..state import HookCandidate, QCReport, QCViolation, HookGraphState
 
 MAX_CLIP_SECONDS = 60.0
 MIN_CLIP_SECONDS = 8.0
@@ -180,7 +180,7 @@ def _check_overlaps(hooks: list[HookCandidate]) -> list[QCViolation]:
     return violations
 
 
-def _check_artifact_sync(hook: HookCandidate, state: VidioFlexState) -> list[QCViolation]:
+def _check_artifact_sync(hook: HookCandidate, state: HookGraphState) -> list[QCViolation]:
     violations: list[QCViolation] = []
     track = next(
         (track for track in state["caption_tracks"] if track.hook_id == hook.hook_id), None
@@ -242,7 +242,7 @@ def _check_virality_justification(hook: HookCandidate) -> list[QCViolation]:
     ]
 
 
-def quality_control_node(state: VidioFlexState, config: RunnableConfig) -> dict:
+def quality_control_node(state: HookGraphState, config: RunnableConfig) -> dict:
     """LangGraph node handler: run the full rubric and emit an audit report."""
     hooks = state["hooks"]
     source_duration = state["source_video"].duration_seconds

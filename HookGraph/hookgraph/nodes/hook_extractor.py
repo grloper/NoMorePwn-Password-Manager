@@ -31,7 +31,7 @@ from ..state import (
     QCViolation,
     ScoreBreakdown,
     TranscriptSegment,
-    VidioFlexState,
+    HookGraphState,
 )
 
 TOP_HOOK_COUNT = 3
@@ -294,7 +294,7 @@ def _repair_hook(
     )
 
 
-def hook_extractor_node(state: VidioFlexState, config: RunnableConfig) -> dict:
+def hook_extractor_node(state: HookGraphState, config: RunnableConfig) -> dict:
     """LangGraph node handler: fresh extraction or violation-driven repair."""
     transcript = state["transcript"]
     scores = score_segments(transcript)

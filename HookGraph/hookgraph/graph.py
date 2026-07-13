@@ -38,7 +38,7 @@ from .state import (
     ScoreBreakdown,
     SourceVideo,
     TranscriptSegment,
-    VidioFlexState,
+    HookGraphState,
 )
 
 # Explicit serializer allowlist: every Pydantic model that can appear in a
@@ -65,13 +65,13 @@ def _default_checkpointer() -> InMemorySaver:
 
 
 def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
-    """Compile the VidioFlex pipeline into an executable LangGraph app.
+    """Compile the HookGraph pipeline into an executable LangGraph app.
 
     A checkpointer is always attached (in-memory by default) so every
     super-step — including each QC retry — is durably snapshotted and the run
     can be inspected or resumed by thread id.
     """
-    builder = StateGraph(VidioFlexState)
+    builder = StateGraph(HookGraphState)
 
     builder.add_node("hook_extractor", hook_extractor_node)
     builder.add_node("scriptwriter", scriptwriter_node)

@@ -1,4 +1,4 @@
-"""State schema layer for the VidioFlex-Agents graph.
+"""State schema layer for the HookGraph graph.
 
 Every value that flows across a graph edge is declared here. The module has three
 sections:
@@ -6,7 +6,7 @@ sections:
 1. Pydantic payload models — the typed media/content artifacts the agents exchange.
 2. Reducer functions — custom accumulators wired into ``Annotated`` state channels
    so concurrent or repeated node writes merge instead of clobbering each other.
-3. ``VidioFlexState`` — the TypedDict LangGraph compiles the graph against.
+3. ``HookGraphState`` — the TypedDict LangGraph compiles the graph against.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class SourceVideo(BaseModel):
     title: str
     duration_seconds: float = Field(gt=0.0)
     language: str = "en"
-    creator_handle: str = "@vidioflex"
+    creator_handle: str = "@hookgraph"
 
 
 class ScoreBreakdown(BaseModel):
@@ -226,7 +226,7 @@ def replace_value(existing: object, incoming: object) -> object:
 # ---------------------------------------------------------------------------
 
 
-class VidioFlexState(TypedDict):
+class HookGraphState(TypedDict):
     """The full structural payload threaded through every node.
 
     Channels with ``Annotated[..., reducer]`` accumulate across node writes;
@@ -260,9 +260,9 @@ def initial_state(
     source_video: SourceVideo,
     transcript: list[TranscriptSegment],
     max_extraction_attempts: int = 4,
-) -> VidioFlexState:
+) -> HookGraphState:
     """Build a fully-populated initial state for a graph invocation."""
-    return VidioFlexState(
+    return HookGraphState(
         source_video=source_video,
         transcript=sorted(transcript, key=lambda seg: seg.start),
         hooks=[],

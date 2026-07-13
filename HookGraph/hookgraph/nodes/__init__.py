@@ -1,4 +1,4 @@
-"""Isolated agent node handlers for the VidioFlex graph."""
+"""Isolated agent node handlers for the HookGraph graph."""
 
 from .hook_extractor import hook_extractor_node
 from .package_compiler import package_compiler_node

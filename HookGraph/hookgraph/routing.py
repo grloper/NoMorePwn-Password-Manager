@@ -1,4 +1,4 @@
-"""Routing rules — the conditional edges of the VidioFlex graph.
+"""Routing rules — the conditional edges of the HookGraph graph.
 
 Kept separate from node handlers so control-flow policy (when to retry, when
 to give up, when to ship) can evolve without touching agent logic.
@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .state import VidioFlexState
+from .state import HookGraphState
 
 RouteDecision = Literal["hook_extractor", "package_compiler"]
 
 
-def route_after_quality_control(state: VidioFlexState) -> RouteDecision:
+def route_after_quality_control(state: HookGraphState) -> RouteDecision:
     """Decide where the pipeline goes after a QualityControl evaluation.
 
     - PASS  -> ``package_compiler`` (the compilation stage).

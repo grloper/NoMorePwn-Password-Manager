@@ -1,4 +1,4 @@
-# VidioFlex-Agents
+# HookGraph
 
 **A stateful LangGraph multi-agent pipeline that turns one long-form landscape video
 transcript into three publish-ready vertical short-form content packages — for TikTok,
@@ -15,7 +15,7 @@ and rewrites the title/description/hashtag set three times — once per platform
 slow, inconsistent, and the platform rules (hard sub-60s ceilings, cold-open hooks,
 non-overlapping cuts) are enforced by nothing but human memory.
 
-VidioFlex-Agents turns that workflow into a deterministic, auditable agent graph:
+HookGraph turns that workflow into a deterministic, auditable agent graph:
 
 - **HookExtractor** scores every transcript segment for semantic density, emotional
   spikes, and sharp topic transitions, then extracts exactly the **top 3
@@ -40,7 +40,7 @@ can be swapped for an LLM call (the node handlers already accept a `langchain_co
 ## Architecture
 
 ```
-                              VidioFlex-Agents graph topology
+                              HookGraph graph topology
  ┌─────────────────────────────────────────────────────────────────────────────────┐
  │                                                                                 │
  │   START                                                                         │
@@ -80,7 +80,7 @@ can be swapped for an LLM call (the node handlers already accept a `langchain_co
  │                                                                                 │
  └─────────────────────────────────────────────────────────────────────────────────┘
 
- State channels (all typed, see vidioflex/state.py):
+ State channels (all typed, see hookgraph/state.py):
    hooks ················· Annotated[list[HookCandidate],  merge_hooks]          (upsert by hook_id)
    caption_tracks ········ Annotated[list[CaptionTrack],   merge_caption_tracks] (upsert by hook_id)
    metadata_packages ····· Annotated[list[MetadataPackage],merge_metadata_packages]
@@ -127,8 +127,8 @@ inspected, resumed, or time-traveled with `graph.get_state_history(config)`. Swa
 ## Installation
 
 ```bash
-git clone https://github.com/grloper/VidioFlex-Agents.git
-cd VidioFlex-Agents
+git clone https://github.com/grloper/HookGraph.git
+cd HookGraph
 
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
@@ -181,13 +181,13 @@ and the packages need human review.
 ## Repository structure
 
 ```
-VidioFlex-Agents/
+HookGraph/
 ├── main.py                        # CLI entry: graph compilation + simulation run
 ├── requirements.txt               # pinned open-source dependencies
 ├── README.md
 ├── LICENSE
 ├── .gitignore
-└── vidioflex/
+└── hookgraph/
     ├── __init__.py
     ├── state.py                   # Layer 1 — Pydantic payload models, reducers, graph state
     ├── analysis.py                # deterministic linguistic scoring engines
@@ -205,7 +205,7 @@ VidioFlex-Agents/
 ## Extending it
 
 - **LLM-powered engines** — every node handler takes `(state, config: RunnableConfig)`;
-  replace any function in `vidioflex/analysis.py` (titling, scoring, tag generation)
+  replace any function in `hookgraph/analysis.py` (titling, scoring, tag generation)
   with a `langchain-core` runnable and the graph, state schema, and QC loop are
   untouched. The rubric stays deterministic, which is exactly what makes an
   LLM-backed extractor safe to loop.
@@ -213,8 +213,8 @@ VidioFlex-Agents/
   (9:16 center crop + subtitle burn-in); point it at the source `.mp4` to cut actual
   clips.
 - **More platforms** — add a `PlatformVariant` builder in
-  `vidioflex/nodes/scriptwriter.py` and extend the `Platform` literal in
-  `vidioflex/state.py`; QC's completeness check follows the type.
+  `hookgraph/nodes/scriptwriter.py` and extend the `Platform` literal in
+  `hookgraph/state.py`; QC's completeness check follows the type.
 
 ## License
 

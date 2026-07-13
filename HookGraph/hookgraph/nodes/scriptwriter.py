@@ -27,7 +27,7 @@ from ..state import (
     PlatformVariant,
     SourceVideo,
     TranscriptSegment,
-    VidioFlexState,
+    HookGraphState,
 )
 
 MAX_CUE_CHARS = 42
@@ -191,7 +191,7 @@ def _build_metadata_package(
     )
 
 
-def scriptwriter_node(state: VidioFlexState, config: RunnableConfig) -> dict:
+def scriptwriter_node(state: HookGraphState, config: RunnableConfig) -> dict:
     """LangGraph node handler: (re)draft captions + metadata for current hooks."""
     segments_by_id = {segment.segment_id: segment for segment in state["transcript"]}
     existing_tracks = {

@@ -1,4 +1,4 @@
-"""VidioFlex-Agents entry point.
+"""HookGraph entry point.
 
 Compiles the LangGraph pipeline and runs a full simulation: a long-form
 transcript goes in, three QC-approved vertical clip packages come out. Runs
@@ -29,13 +29,13 @@ import json
 import sys
 from pathlib import Path
 
-from vidioflex.graph import build_graph
-from vidioflex.sample_data import load_sample_transcript
-from vidioflex.state import (
+from hookgraph.graph import build_graph
+from hookgraph.sample_data import load_sample_transcript
+from hookgraph.state import (
     ClipPackage,
     SourceVideo,
     TranscriptSegment,
-    VidioFlexState,
+    HookGraphState,
     initial_state,
 )
 
@@ -44,7 +44,7 @@ DIVIDER = "=" * 78
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="vidioflex",
+        prog="hookgraph",
         description="Repurpose a long-form video transcript into 3 vertical clip packages.",
     )
     parser.add_argument(
@@ -67,8 +67,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--thread-id",
-        default="vidioflex-demo-run",
-        help="Checkpointer thread id for this run (default: vidioflex-demo-run).",
+        default="hookgraph-demo-run",
+        help="Checkpointer thread id for this run (default: hookgraph-demo-run).",
     )
     return parser.parse_args(argv)
 
@@ -83,7 +83,7 @@ def load_transcript(path: Path) -> tuple[SourceVideo, list[TranscriptSegment]]:
     return source, segments
 
 
-def print_final_report(state: VidioFlexState) -> None:
+def print_final_report(state: HookGraphState) -> None:
     """Human-readable summary of the compiled clip packages and QC audit trail."""
     print(f"\n{DIVIDER}\nFINAL CONTENT PACKAGES\n{DIVIDER}")
     for package in state["final_packages"]:
@@ -116,7 +116,7 @@ def print_final_report(state: VidioFlexState) -> None:
 
 
 def export_packages(
-    state: VidioFlexState, source: SourceVideo, output_dir: Path
+    state: HookGraphState, source: SourceVideo, output_dir: Path
 ) -> list[Path]:
     """Write SRT files plus a machine-readable package manifest to disk."""
     run_dir = output_dir / source.video_id
@@ -150,7 +150,7 @@ def run(argv: list[str]) -> int:
     else:
         source, segments = load_sample_transcript()
 
-    print(f"{DIVIDER}\nVidioFlex-Agents — short-form repurposing pipeline\n{DIVIDER}")
+    print(f"{DIVIDER}\nHookGraph — short-form repurposing pipeline\n{DIVIDER}")
     print(
         f"Source: '{source.title}' ({source.duration_seconds:.0f}s, "
         f"{len(segments)} transcript segments)\n"
@@ -167,7 +167,7 @@ def run(argv: list[str]) -> int:
                 print(f"  [{node_name}] {event.split('] ', 1)[-1]}")
 
     snapshot = app.get_state(config)
-    final_state: VidioFlexState = snapshot.values
+    final_state: HookGraphState = snapshot.values
 
     print_final_report(final_state)
     written = export_packages(final_state, source, args.output_dir)

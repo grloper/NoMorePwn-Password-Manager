@@ -13,7 +13,7 @@ import shlex
 
 from langchain_core.runnables import RunnableConfig
 
-from ..state import ClipPackage, HookCandidate, RenderManifest, SourceVideo, VidioFlexState
+from ..state import ClipPackage, HookCandidate, RenderManifest, SourceVideo, HookGraphState
 
 
 def _build_render_manifest(hook: HookCandidate, source: SourceVideo) -> RenderManifest:
@@ -37,7 +37,7 @@ def _build_render_manifest(hook: HookCandidate, source: SourceVideo) -> RenderMa
     )
 
 
-def package_compiler_node(state: VidioFlexState, config: RunnableConfig) -> dict:
+def package_compiler_node(state: HookGraphState, config: RunnableConfig) -> dict:
     """LangGraph node handler: compile approved artifacts into final packages."""
     source = state["source_video"]
     tracks = {track.hook_id: track for track in state["caption_tracks"]}

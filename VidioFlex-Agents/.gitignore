@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Pipeline exports
+output/
+
+# Environments & editors
+.env
+.idea/
+.vscode/
+.DS_Store

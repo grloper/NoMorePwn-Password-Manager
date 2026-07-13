@@ -33,6 +33,7 @@ from ..state import (
     TranscriptSegment,
     HookGraphState,
 )
+from .quality_control import MIN_CLIP_SECONDS, MAX_CLIP_SECONDS
 
 TOP_HOOK_COUNT = 3
 NARRATIVE_ARC_CAP_SECONDS = 95.0   # first-pass cap: full story beat
@@ -281,7 +282,35 @@ def _repair_hook(
                 else:
                     hi -= 1
 
-    if "duration_under_60s" in rules or _window_duration(transcript, lo, hi) > PLATFORM_CAP_SECONDS:
+    duration = _window_duration(transcript, lo, hi)
+    if "duration_under_60s" in rules:
+        # Handle both too-long and too-short cases separately.
+        if duration > MAX_CLIP_SECONDS:
+            # Too long: trim the weakest edges.
+            lo, hi = _trim_window_to_duration(transcript, scores, lo, hi, PLATFORM_CAP_SECONDS)
+        elif duration < MIN_CLIP_SECONDS:
+            # Too short: attempt to expand the window by absorbing neighbors.
+            # Build a claimed set from sibling windows so expansion doesn't collide with them.
+            claimed: set[int] = set()
+            for other_id, (other_start, other_end) in sibling_windows.items():
+                # Find all segments that fall within the sibling's time window.
+                for pos in range(len(transcript)):
+                    if transcript[pos].start >= other_start and transcript[pos].end <= other_end:
+                        claimed.add(pos)
+            # Find the peak segment within this hook's window to use as expansion anchor.
+            peak_pos = lo + max(
+                range(hi - lo + 1), key=lambda offset: scores[lo + offset].retention
+            )
+            # Expand outward from the peak, up to the platform cap to stay feasible.
+            new_lo, new_hi = _expand_window(
+                transcript, scores, peak_pos, PLATFORM_CAP_SECONDS, claimed
+            )
+            # If expansion got us to at least 8 seconds, use it; else give up (let QC flag it).
+            if _window_duration(transcript, new_lo, new_hi) >= MIN_CLIP_SECONDS:
+                lo, hi = new_lo, new_hi
+
+    # Ensure we never exceed the cap after all repairs.
+    if _window_duration(transcript, lo, hi) > PLATFORM_CAP_SECONDS:
         lo, hi = _trim_window_to_duration(transcript, scores, lo, hi, PLATFORM_CAP_SECONDS)
 
     if "punchy_opening_line" in rules or not is_punchy_opening(transcript[lo].text):
@@ -309,6 +338,30 @@ def hook_extractor_node(state: HookGraphState, config: RunnableConfig) -> dict:
         # coexist; retry the whole extraction with tight platform-sized windows.
         cap = PLATFORM_CAP_SECONDS if structural_failure else NARRATIVE_ARC_CAP_SECONDS
         hooks = _extract_fresh(transcript, scores, max_window_seconds=cap)
+
+        # On structural failure, increment all hook revisions so Scriptwriter and QC
+        # detect the re-extraction and regenerate artifacts (not reuse stale ones).
+        if structural_failure and state["hooks"]:
+            max_prior_revision = max(hook.revision for hook in state["hooks"])
+            new_revision = max_prior_revision + 1
+            hooks = [
+                HookCandidate(
+                    hook_id=hook.hook_id,
+                    rank=hook.rank,
+                    hook_title=hook.hook_title,
+                    virality_score=hook.virality_score,
+                    virality_justification=hook.virality_justification,
+                    peak_type=hook.peak_type,
+                    start_seconds=hook.start_seconds,
+                    end_seconds=hook.end_seconds,
+                    segment_ids=hook.segment_ids,
+                    opening_line=hook.opening_line,
+                    score_breakdown=hook.score_breakdown,
+                    revision=new_revision,
+                )
+                for hook in hooks
+            ]
+
         events = [
             f"[HookExtractor] Attempt {attempt}: scored {len(transcript)} segments and "
             f"extracted {len(hooks)} hooks (window cap {cap:.0f}s): "

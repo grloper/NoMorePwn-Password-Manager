@@ -157,7 +157,10 @@ def run(argv: list[str]) -> int:
     )
 
     app = build_graph()
-    config = {"configurable": {"thread_id": args.thread_id}, "recursion_limit": 50}
+    # Scale recursion_limit based on max_attempts: each QC retry cycle costs 3 super-steps
+    # (hook_extractor → scriptwriter → quality_control), plus overhead for initial setup
+    recursion_limit = 10 + (args.max_attempts * 3)
+    config = {"configurable": {"thread_id": args.thread_id}, "recursion_limit": recursion_limit}
     state = initial_state(source, segments, max_extraction_attempts=args.max_attempts)
 
     print("Executing graph (streaming node updates):\n")

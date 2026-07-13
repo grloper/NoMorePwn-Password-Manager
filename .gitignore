@@ -22,3 +22,6 @@ venv/
 .pytest_cache/
 .streamlit/secrets.toml
 .DS_Store
+
+# HookGraph test artifacts
+output/

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "NoMorePwn — Verified Login Capture",
+  "version": "0.1.0",
+  "description": "Captures credentials only after a login is verified to have succeeded.",
+
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/spa-observer.js", "src/content/capture.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+
+  "permissions": ["webRequest", "webNavigation", "tabs"],
+
+  "host_permissions": ["<all_urls>"]
+}

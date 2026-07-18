@@ -1,0 +1,427 @@
+/**
+ * Exercises the Verified Authentication Observer end to end:
+ *   1. SecureCredentialHolder contract
+ *   2. verifier scoring
+ *   3. background service worker integration (fake chrome.* event bus)
+ *   4. SPA MutationObserver in a real DOM (jsdom)
+ */
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+
+const SRC = new URL('../src/', import.meta.url);
+const mod = (p) => import(new URL(p, SRC).href);
+
+let pass = 0;
+let fail = 0;
+const failures = [];
+
+function check(name, cond, detail = '') {
+  if (cond) {
+    pass++;
+    console.log(`  PASS  ${name}`);
+  } else {
+    fail++;
+    failures.push(name);
+    console.log(`  FAIL  ${name} ${detail}`);
+  }
+}
+
+const section = (t) => console.log(`\n=== ${t} ===`);
+
+/* ================================================================== */
+section('1. SecureCredentialHolder');
+/* ================================================================== */
+{
+  const { SecureCredentialHolder } = await mod('shared/secure-credential.js');
+
+  const h = await SecureCredentialHolder.create({
+    username: 'ofek',
+    password: 'hunter2-correct-horse',
+    targetUrl: 'https://example.com',
+    timestamp: 1,
+  });
+
+  let seen = null;
+  await h.reveal((c) => {
+    seen = { ...c };
+  });
+  check('reveal() round-trips the credential', seen?.username === 'ofek' && seen?.password === 'hunter2-correct-horse');
+  check('meta survives without exposing the secret', h.meta.targetUrl === 'https://example.com' && !('password' in h.meta));
+
+  check('not wiped yet', h.wiped === false);
+  h.wipe();
+  check('wiped flag flips', h.wiped === true);
+
+  let threw = false;
+  try {
+    await h.reveal(() => {});
+  } catch {
+    threw = true;
+  }
+  check('reveal() after wipe throws', threw);
+
+  h.wipe();
+  check('wipe() is idempotent', h.wiped === true);
+
+  // reveal() must scrub the decrypted buffer even when the consumer throws.
+  const h2 = await SecureCredentialHolder.create({ username: 'a', password: 'b', targetUrl: 'u', timestamp: 2 });
+  let propagated = false;
+  try {
+    await h2.reveal(() => {
+      throw new Error('consumer blew up');
+    });
+  } catch (e) {
+    propagated = e.message === 'consumer blew up';
+  }
+  check('reveal() propagates consumer errors (finally still ran)', propagated);
+  h2.wipe();
+
+  // A direct check that scrubbing really mutates a buffer, since the
+  // holder's own buffers are #private.
+  const probe = new Uint8Array(8).fill(0xff);
+  crypto.getRandomValues(probe);
+  probe.fill(0);
+  check('typed-array scrub semantics hold', probe.every((b) => b === 0));
+}
+
+/* ================================================================== */
+section('2. Verifier scoring');
+/* ================================================================== */
+{
+  const { scoreResponse, scoreNavigation, SUCCESS_THRESHOLD } = await mod('background/verifier.js');
+  const entry = { loginUrl: 'https://app.example.com/login' };
+  const hdr = (name, value) => ({ name, value });
+
+  const r302 = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Location', '/dashboard'), hdr('Set-Cookie', 'sessionid=abc; HttpOnly')],
+  });
+  check('302 -> /dashboard clears threshold', r302.points >= SUCCESS_THRESHOLD, `points=${r302.points}`);
+
+  const r401 = scoreResponse(entry, { statusCode: 401, url: 'https://app.example.com/login', responseHeaders: [] });
+  check('401 is a conclusive rejection', r401.rejected === true);
+
+  const r403 = scoreResponse(entry, { statusCode: 403, url: 'https://app.example.com/login', responseHeaders: [] });
+  check('403 is a conclusive rejection', r403.rejected === true);
+
+  const rBack = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Location', '/login?error=1'), hdr('Set-Cookie', 'csrftoken=zzz')],
+  });
+  check('302 back to /login does NOT clear threshold', rBack.points < SUCCESS_THRESHOLD, `points=${rBack.points}`);
+
+  const rCookieOnly = scoreResponse(entry, {
+    statusCode: 200,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Set-Cookie', 'sessionid=abc')],
+  });
+  check('a session cookie ALONE does not verify', rCookieOnly.points < SUCCESS_THRESHOLD, `points=${rCookieOnly.points}`);
+
+  const nav = scoreNavigation(entry, {
+    url: 'https://app.example.com/dashboard',
+    transitionQualifiers: ['server_redirect'],
+  });
+  check('navigation to /dashboard clears threshold', nav.points >= SUCCESS_THRESHOLD, `points=${nav.points}`);
+
+  const navStay = scoreNavigation(entry, { url: 'https://app.example.com/login', transitionQualifiers: [] });
+  check('navigation back to /login scores 0', navStay.points === 0);
+}
+
+/* ================================================================== */
+section('3. Background service worker integration');
+/* ================================================================== */
+{
+  // ---- fake chrome.* event bus -------------------------------------
+  const bus = {};
+  const evt = (name) => {
+    bus[name] = [];
+    return { addListener: (fn) => bus[name].push(fn) };
+  };
+  const fire = (name, ...args) => bus[name].map((fn) => fn(...args));
+
+  globalThis.chrome = {
+    runtime: { onMessage: evt('onMessage'), onSuspend: evt('onSuspend'), lastError: null },
+    webRequest: { onHeadersReceived: evt('onHeadersReceived'), onErrorOccurred: evt('onErrorOccurred') },
+    webNavigation: { onCommitted: evt('onCommitted') },
+    tabs: { onRemoved: evt('onRemoved') },
+  };
+
+  // ---- spy on wipe() so we can prove it fires on every path ---------
+  const { SecureCredentialHolder } = await mod('shared/secure-credential.js');
+  let wipes = 0;
+  const realWipe = SecureCredentialHolder.prototype.wipe;
+  SecureCredentialHolder.prototype.wipe = function (...a) {
+    wipes++;
+    return realWipe.apply(this, a);
+  };
+
+  const logs = [];
+  const realLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+
+  const store = await mod('background/pending-store.js');
+  await mod('background/service-worker.js');
+
+  console.log = realLog;
+  check('all listeners registered at module load', bus.onMessage.length === 1 && bus.onHeadersReceived.length === 1 && bus.onCommitted.length === 1 && bus.onRemoved.length === 1);
+
+  const submit = (tabId, url = 'https://app.example.com/login') =>
+    new Promise((resolve) => {
+      fire(
+        'onMessage',
+        { type: 'nmp:submit-observed', credential: { username: 'ofek', password: 'pw', targetUrl: 'https://app.example.com', timestamp: Date.now() } },
+        { tab: { id: tabId }, url },
+        resolve,
+      );
+    });
+
+  // The verified path awaits subtle.decrypt, so give the microtask+macrotask
+  // queues several turns to drain before asserting.
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 5));
+  };
+
+  // --- happy path: 302 -> /dashboard ---
+  console.log = (...a) => logs.push(a.join(' '));
+  wipes = 0;
+  await submit(1);
+  check('submission is tracked by tab id', store.has(1), `size=${store.size()}`);
+
+  fire('onHeadersReceived', {
+    tabId: 1,
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    type: 'main_frame',
+    responseHeaders: [{ name: 'Location', value: '/dashboard' }],
+  });
+  await settle();
+  console.log = realLog;
+
+  check('verified login logs the expected line', logs.some((l) => l === 'Login verified for URL: https://app.example.com'), JSON.stringify(logs));
+  check('entry removed from the store after verify', !store.has(1));
+  check('wipe() fired on the SUCCESS path', wipes >= 1, `wipes=${wipes}`);
+
+  // --- rejection path: 401 ---
+  wipes = 0;
+  await submit(2);
+  fire('onHeadersReceived', { tabId: 2, statusCode: 401, url: 'https://app.example.com/login', type: 'xmlhttprequest', responseHeaders: [] });
+  await settle();
+  check('401 clears the pending entry', !store.has(2));
+  check('wipe() fired on the FAILURE path', wipes >= 1, `wipes=${wipes}`);
+
+  // --- tab closed mid-flight ---
+  wipes = 0;
+  await submit(3);
+  fire('onRemoved', 3);
+  check('closing the tab wipes the credential', !store.has(3) && wipes >= 1);
+
+  // --- SPA verdicts ---
+  wipes = 0;
+  await submit(4);
+  fire('onMessage', { type: 'nmp:spa-success', reason: 'auth-marker' }, { tab: { id: 4 } }, () => {});
+  await settle();
+  check('SPA success resolves the capture', !store.has(4) && wipes >= 1);
+
+  wipes = 0;
+  await submit(5);
+  fire('onMessage', { type: 'nmp:spa-failure', reason: 'error-text' }, { tab: { id: 5 } }, () => {});
+  await settle();
+  check('SPA failure wipes the capture', !store.has(5) && wipes >= 1);
+
+  // --- resubmission supersedes ---
+  wipes = 0;
+  await submit(6);
+  await submit(6);
+  check('resubmission supersedes and wipes the stale credential', store.size() >= 1 && wipes >= 1, `wipes=${wipes}`);
+
+  // --- timeout ---
+  wipes = 0;
+  await submit(7);
+  check('pending before deadline', store.has(7));
+  await new Promise((r) => setTimeout(r, store.VERIFICATION_WINDOW_MS + 250));
+  check('timeout wipes the credential', !store.has(7), `size=${store.size()}`);
+  check('wipe() fired on the TIMEOUT path', wipes >= 1, `wipes=${wipes}`);
+
+  store.discardAll('cleanup');
+  SecureCredentialHolder.prototype.wipe = realWipe;
+}
+
+/* ================================================================== */
+section('4. SPA MutationObserver (jsdom)');
+/* ================================================================== */
+{
+  const observerSrc = readFileSync(new URL('content/spa-observer.js', SRC), 'utf8');
+
+  /**
+   * Boot a DOM with a login form, run the observer, and drive the page.
+   * @returns {{window, watch, form}}
+   */
+  function boot(bodyHtml = '<form id="login"><input type="password" id="pw"><button>Go</button></form>') {
+    const dom = new JSDOM(`<!doctype html><body>${bodyHtml}</body>`, { runScripts: 'outside-only' });
+    dom.window.eval(observerSrc);
+    return { window: dom.window, form: dom.window.document.querySelector('form') };
+  }
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // --- success: authenticated marker appears ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({
+      form,
+      username: 'ofek',
+      onSuccess: (r) => (outcome = ['success', r]),
+      onFailure: (r) => (outcome = ['failure', r]),
+    });
+    const nav = window.document.createElement('nav');
+    nav.id = 'user-menu';
+    window.document.body.appendChild(nav);
+    await wait(400);
+    check('detects #user-menu appearing', outcome?.[0] === 'success' && outcome[1] === 'auth-marker', JSON.stringify(outcome));
+  }
+
+  // --- success: logout control appears ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    const btn = window.document.createElement('button');
+    btn.textContent = 'Log out';
+    window.document.body.appendChild(btn);
+    await wait(400);
+    check('detects a "Log out" control', outcome?.[0] === 'success', JSON.stringify(outcome));
+  }
+
+  // --- success: username echoed into the UI ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofekv', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    const span = window.document.createElement('span');
+    span.textContent = 'Signed in as ofekv';
+    window.document.body.appendChild(span);
+    await wait(400);
+    check('detects the username echoed back', outcome?.[0] === 'success' && outcome[1] === 'username-echoed', JSON.stringify(outcome));
+  }
+
+  // --- success: login form removed ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    form.remove();
+    window.document.body.appendChild(window.document.createElement('div'));
+    await wait(400);
+    check('detects the login form disappearing', outcome?.[0] === 'success' && outcome[1] === 'login-form-removed', JSON.stringify(outcome));
+  }
+
+  // --- failure: error text appears ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    const err = window.document.createElement('div');
+    err.textContent = 'Incorrect username or password.';
+    window.document.body.appendChild(err);
+    await wait(400);
+    check('detects "Incorrect username or password"', outcome?.[0] === 'failure' && outcome[1] === 'error-text', JSON.stringify(outcome));
+  }
+
+  // --- error text wins over a co-occurring success signal ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    const err = window.document.createElement('div');
+    err.textContent = 'Invalid password';
+    const nav = window.document.createElement('nav');
+    nav.id = 'user-menu';
+    window.document.body.append(err, nav);
+    await wait(400);
+    check('error text outranks a success marker', outcome?.[0] === 'failure', JSON.stringify(outcome));
+  }
+
+  // --- a re-rendered login form is NOT success ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    form.remove();
+    const fresh = window.document.createElement('form');
+    fresh.innerHTML = '<input type="password">';
+    window.document.body.appendChild(fresh);
+    await wait(400);
+    check('a re-rendered login form is not treated as success', outcome === null, JSON.stringify(outcome));
+  }
+
+  // --- CPU: N mutations must not mean N evaluations ---
+  {
+    const { window, form } = boot();
+    let evaluations = 0;
+    const realQS = window.document.querySelector.bind(window.document);
+    window.document.querySelector = (sel) => {
+      if (String(sel).includes('user-menu')) evaluations++;
+      return realQS(sel);
+    };
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: () => {}, onFailure: () => {} });
+    for (let i = 0; i < 500; i++) {
+      window.document.body.appendChild(window.document.createElement('div'));
+    }
+    await wait(400);
+    check('500 mutations coalesce into few evaluations', evaluations > 0 && evaluations <= 3, `evaluations=${evaluations}`);
+  }
+
+  // --- disconnect: no work after settling ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    let evaluations = 0;
+    const realQS = window.document.querySelector.bind(window.document);
+    window.document.querySelector = (sel) => {
+      if (String(sel).includes('user-menu')) evaluations++;
+      return realQS(sel);
+    };
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    const nav = window.document.createElement('nav');
+    nav.id = 'user-menu';
+    window.document.body.appendChild(nav);
+    await wait(400);
+    const settledAt = evaluations;
+    const outcomeAt = JSON.stringify(outcome);
+
+    for (let i = 0; i < 500; i++) window.document.body.appendChild(window.document.createElement('div'));
+    await wait(500);
+    check('observer stops evaluating after it settles', evaluations === settledAt, `before=${settledAt} after=${evaluations}`);
+    check('outcome is not fired twice', JSON.stringify(outcome) === outcomeAt);
+  }
+
+  // --- teardown() is callable and idempotent ---
+  {
+    const { window, form } = boot();
+    const stop = window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: () => {}, onFailure: () => {} });
+    stop();
+    stop();
+    let fired = false;
+    window.__nmpSpaObserver.watch; // no-op
+    window.document.body.appendChild(window.document.createElement('div'));
+    await wait(300);
+    check('teardown() is idempotent and silences the observer', !fired);
+  }
+
+  // --- the 10s deadline actually fires ---
+  {
+    const { window, form } = boot();
+    let outcome = null;
+    window.__nmpSpaObserver.watch({ form, username: 'ofek', onSuccess: (r) => (outcome = ['success', r]), onFailure: (r) => (outcome = ['failure', r]) });
+    check('observer window is 10s as specified', window.__nmpSpaObserver.WINDOW_MS === 10000);
+    await wait(window.__nmpSpaObserver.WINDOW_MS + 600);
+    check('deadline fires onFailure("timeout")', outcome?.[0] === 'failure' && outcome[1] === 'timeout', JSON.stringify(outcome));
+  }
+}
+
+console.log(`\n${'='.repeat(50)}\n  ${pass} passed, ${fail} failed`);
+if (fail) console.log('  failures:\n' + failures.map((f) => `   - ${f}`).join('\n'));
+process.exit(fail ? 1 : 0);

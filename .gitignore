@@ -28,3 +28,7 @@ venv/
 # Tooling
 .pytest_cache/
 .DS_Store
+
+# Browser extension (Node dev tooling only; the extension itself ships as source)
+node_modules/
+package-lock.json

@@ -172,5 +172,39 @@ Automating this later is a cron job around `export` — no code changes.
 
 **Out of scope (v0.1):** malware/keyloggers on the host (no software
 defeats a compromised OS), memory forensics while unlocked, and
-multi-user concurrency. Clipboard handling is deliberately absent —
-copy from the Reveal box consciously.
+multi-user concurrency.
+
+## 9. Desktop app & background service
+
+The primary interface is a native **PySide6 (Qt)** desktop app
+(`nomorepwn_app/`) that packages into a single `NoMorePwn.exe`. It reuses
+the `nomorepwn` core unchanged — the security model above is identical;
+only the presentation layer is new. (A legacy Streamlit dashboard,
+`app.py`, still works but is optional.)
+
+Security-relevant lifecycle choices:
+
+- **Master key in memory only.** The unlocked `Vault` holds the derived
+  key on one object. Locking calls `Vault.lock()` (zeroes the reference)
+  and tears down the entire unlocked "shell" widget tree, so no decrypted
+  field lingers in a Qt widget after lock.
+- **The window is not the process.** Closing the window never silently
+  leaves an unlocked vault around: the ✕ button always locks first, then
+  either hides to the tray or quits. The app runs as a tray-resident
+  background service (`QSystemTrayIcon`), single-instance guarded via a
+  `QLocalServer` named pipe.
+- **Auto-lock.** A global input-activity filter resets an idle timer;
+  when it fires, the vault locks and the tray notifies. Default 5 minutes,
+  configurable (including "never").
+- **Clipboard hygiene.** Copied secrets are wiped from the clipboard after
+  a configurable delay (default 20 s) — but only if the clipboard still
+  holds our value, so we never clobber something you copied since.
+- **KDF/network off the UI thread.** Argon2id derivation (unlock/create)
+  and HIBP breach checks run on a `QThreadPool` worker, so the interface
+  never freezes and secrets stay on their worker stack frame.
+- **Self-describing data location.** The vault and non-secret preferences
+  live under the per-user app-data dir (`%APPDATA%\NoMorePwn` on Windows),
+  overridable via `NOMOREPWN_DATA`.
+
+Clipboard handling is now present and deliberately auto-wiping; the Reveal
+box remains opt-in and per-item.

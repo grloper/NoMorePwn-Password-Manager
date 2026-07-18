@@ -1,118 +1,106 @@
-# NoMorePwn — Local Password Manager and Security Auditor
+# 🔐 NoMorePwn — a local-first password manager for Windows
 
-A local-first, zero-knowledge credential vault with built-in security
-auditing. One SQLite file on your disk, one Streamlit dashboard in your
-browser. Nothing leaves your machine unless you explicitly export an
-encrypted backup or run an opt-in breach check.
+A **modern, tray-resident** password manager that keeps every secret
+encrypted on your own machine. No cloud account, no telemetry, no
+subscription — just one file on your disk, sealed with a key derived from
+your master password that **never touches disk**.
 
-## Features
+> Think 1Password's polish, but zero-knowledge and 100% local.
 
-- **Local vault** — add, view, rotate, and delete credentials in a web
-  UI served on localhost (Streamlit + SQLite).
-- **Zero-knowledge encryption** — Argon2id key derivation (PBKDF2-600k
-  fallback) and AES-256-GCM per field. The master key is held in memory
-  only and never written to disk.
-- **Breach checks via k-anonymity** — HaveIBeenPwned lookups send only
-  the first 5 characters of a SHA-1 hash. The password itself never
-  leaves your machine.
-- **MFA tracking** — a per-account flag, surfaced in the vault list and
-  the audit report, for accounts where multi-factor authentication is
-  not yet enabled.
-- **Strength estimation** — zxcvbn pattern-aware scoring, fully offline.
-- **Tamper-evident history** — every password version is checksummed
-  (SHA-256) and GCM-authenticated, and the whole vault is verified
-  automatically at every unlock.
-- **Injection-resistant by construction** — parameterized queries only,
-  allowlist input validation, and a test that fails if dynamic SQL is
-  ever introduced.
+<!-- Screenshots live in the GitHub Release notes and docs/ -->
 
-Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+## ✨ What it does
 
-## Demo
+- 🗂 **Two-pane vault** — searchable item list + rich detail view, colour
+  avatars, MFA badges, and password age at a glance.
+- 🧊 **Lives in the system tray** — the "show hidden icons" ⌃ area,
+  bottom-right. Close the window and it keeps running, locked, ready for
+  instant access. Quit fully from the tray whenever you want.
+- 🔒 **Smart locking** — auto-locks after inactivity, locks the moment you
+  hide it, and the **X button always asks**: *keep running in the tray* or
+  *quit completely* — either way it locks first.
+- 🎲 **Built-in generator** — cryptographically secure passwords and
+  memorable passphrases, with a live strength meter.
+- 🩺 **Security dashboard** — a health score plus weak, reused, stale, and
+  MFA-less accounts surfaced instantly; optional breach scan via
+  HaveIBeenPwned k-anonymity.
+- 🔑 **Zero-knowledge crypto** — Argon2id key derivation (PBKDF2-600k
+  fallback) + AES-256-GCM per field. The master key lives only in memory.
+- 🕵️ **Tamper-evident** — every ciphertext and history entry is checksummed
+  and GCM-authenticated; verified automatically at every unlock.
+- ☁️ **Breach check via k-anonymity** — only the first 5 characters of a
+  SHA-1 hash ever leave your machine, and only when you ask.
 
-Unlocking the vault. The master password is stretched with Argon2id
-into the in-memory encryption key; an integrity sweep of every
-ciphertext runs on unlock:
+## ⬇️ Install (Windows)
 
-![Unlock screen](docs/screenshots/unlock.png)
+Grab the latest build from **[Releases](https://github.com/grloper/NoMorePwn-Password-Manager/releases)**:
 
-The vault view. Entries that need attention are flagged inline (MFA
-off, stale passwords). Expanding an entry gives reveal, strength
-estimate, rotation with tamper-evident history, and a two-step delete:
+| File | Use it if… |
+|---|---|
+| **`NoMorePwn-<version>-Setup.exe`** | You want it installed properly — Start-menu shortcut, optional *launch at sign-in*, and an uninstaller. No admin required. |
+| **`NoMorePwn-<version>-portable.exe`** | You just want to download one file and run it. |
 
-![Vault view](docs/screenshots/vault.png)
+Every push to `main` publishes a fresh signed-off build automatically.
 
-The audit view. Summary counts, accounts missing MFA, stale passwords,
-and an on-demand sweep that scores every password locally and checks it
-against known breaches via k-anonymity:
+On first launch you'll create your **master password**. There is no
+recovery — choose something strong and memorable.
 
-![Audit view](docs/screenshots/audit.png)
+## 🖱 How it behaves
 
-## Quickstart
+- **Left-click the tray icon** → open the window (it prompts for your
+  master password if locked).
+- **Right-click the tray icon** → open, lock, or quit completely.
+- **Press ✕ on the window** → choose *keep running in the tray* or *quit
+  completely*. The vault is always locked either way.
+- **Step away** → it auto-locks after your chosen timeout (default 5 min).
+
+Everything is configurable under **Settings** (auto-lock, clipboard
+auto-wipe, close behaviour, launch-at-startup, dark/light theme).
+
+## 🧑‍💻 Run from source
 
 ```bash
-git clone <this-repo> && cd NoMorePwn-Password-Manager
-python -m venv .venv && source .venv/bin/activate
+git clone https://github.com/grloper/NoMorePwn-Password-Manager
+cd NoMorePwn-Password-Manager
+python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 1. Create your encrypted vault (choose a strong master passphrase)
-python scripts/init_db.py
-
-# 2. Import an existing plaintext file (service,username,password per line)
-python scripts/import_notepad.py my-old-passwords.txt
-
-# 3. Launch the dashboard
-streamlit run app.py
+python NoMorePwn.py            # open the app
+python NoMorePwn.py --tray     # start hidden in the tray (locked)
 ```
 
-Open http://localhost:8501, unlock, and review the **Audit** tab. Once
-the import is verified, securely delete the plaintext file
-(`shred -u my-old-passwords.txt` on Linux).
-
-## Encrypted cloud backup (optional)
+## 🏗 Build the .exe yourself
 
 ```bash
-# Everything is sealed with AES-256-GCM before it leaves your machine:
-python scripts/backup_tool.py export --out vault-backup.nmpbak
-# The .nmpbak blob is safe to store in any cloud drive.
-
-# Restore on any machine:
-python scripts/backup_tool.py restore vault-backup.nmpbak
+pip install -r requirements-build.txt
+python build/make_icon.py                                   # regenerate the icon
+pyinstaller build/NoMorePwn.spec --distpath dist --noconfirm  # -> dist/NoMorePwn.exe
+# optional installer (needs Inno Setup 6):
+ISCC build/installer.iss                                     # -> dist/NoMorePwn-Setup.exe
 ```
 
-## Project layout
+## 🗄 Where your data lives
 
-```
-├── app.py                    # Streamlit dashboard (unlock, vault, audit)
-├── requirements.txt
-├── .streamlit/config.toml    # UI theme
-├── nomorepwn/                # core library
-│   ├── config.py             #   paths and audit thresholds
-│   ├── crypto.py             #   Argon2id/PBKDF2 KDF, AES-256-GCM, checksums
-│   ├── db.py                 #   SQLite layer — parameterized queries only
-│   ├── validation.py         #   allowlist input validation
-│   ├── vault.py              #   orchestration: unlock, CRUD, tamper sweep
-│   ├── strength.py           #   zxcvbn strength scoring (offline)
-│   └── leakcheck.py          #   HIBP k-anonymity range queries
-├── scripts/
-│   ├── init_db.py            # create a new vault
-│   ├── import_notepad.py     # bulk-import plaintext passwords
-│   └── backup_tool.py        # zero-knowledge export/restore blob
-├── tests/test_core.py        # crypto, tamper, validation and SQL-policy tests
-└── docs/ARCHITECTURE.md      # security model
-```
+The encrypted vault is stored at `%APPDATA%\NoMorePwn\vault.db`, with
+preferences in `settings.json` next to it. Set the `NOMOREPWN_DATA`
+environment variable to relocate it (e.g. onto an encrypted volume).
 
-## Running the tests
+## 🔐 Security honesty
+
+- Your master password is the **only** key. There is no recovery.
+- The vault file is safe to lose, not safe to hand out: encrypted fields
+  are unbreakable without the passphrase, but service names and usernames
+  are visible metadata.
+- No tool can protect an unlocked vault from malware already running on
+  your machine. Lock it when you step away (NoMorePwn does this for you).
+
+Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## 🧪 Tests
 
 ```bash
 python -m unittest discover tests -v
 ```
 
-## Security limitations
-
-- The master password is the only key. There is no recovery mechanism.
-- Encrypted fields cannot be read without the passphrase, but service
-  names and usernames are stored as visible metadata in v0.1. Treat the
-  vault file as private.
-- No tool can protect an unlocked vault from malware already running on
-  the machine. Lock the vault when you step away.
+Covers crypto round-trips, tamper detection, validation, the SQL-injection
+policy, the secure generator, and the vault lifecycle.

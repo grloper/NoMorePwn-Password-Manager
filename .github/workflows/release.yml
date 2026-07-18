@@ -1,0 +1,89 @@
+name: Build & Release
+
+# Every push to main produces a fresh, downloadable Windows build:
+# a portable NoMorePwn.exe and a NoMorePwn-Setup.exe installer, published
+# to a GitHub Release tagged v1.0.<run-number>.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute version
+        id: version
+        shell: bash
+        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Run core tests
+        run: python -m unittest discover tests -v
+
+      - name: Generate app icon
+        run: python build/make_icon.py
+
+      - name: Build portable executable
+        env:
+          NOMOREPWN_VERSION: ${{ steps.version.outputs.version }}
+        run: pyinstaller build/NoMorePwn.spec --distpath dist --workpath build/_work --noconfirm
+
+      - name: Build installer (Inno Setup)
+        env:
+          NOMOREPWN_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          choco install innosetup --no-progress -y
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          mkdir -p release
+          cp "dist/NoMorePwn.exe" "release/NoMorePwn-${{ steps.version.outputs.version }}-portable.exe"
+          cp "dist/NoMorePwn-Setup.exe" "release/NoMorePwn-${{ steps.version.outputs.version }}-Setup.exe"
+          ls -la release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoMorePwn-${{ steps.version.outputs.version }}
+          path: release/*
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: NoMorePwn v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            **NoMorePwn v${{ steps.version.outputs.version }}** — local-first, tray-resident Windows password manager.
+
+            ### Downloads
+            - **NoMorePwn-${{ steps.version.outputs.version }}-Setup.exe** — recommended installer (Start-menu shortcut, optional launch-at-sign-in, uninstaller). No admin required.
+            - **NoMorePwn-${{ steps.version.outputs.version }}-portable.exe** — single-file portable app; just download and run.
+
+            The app lives in your system tray (the "show hidden icons" ⌃ area). Close the window to lock & keep it running, or quit fully from the tray. Your vault is stored encrypted under `%APPDATA%\NoMorePwn` and never leaves your device.
+          files: |
+            release/NoMorePwn-${{ steps.version.outputs.version }}-portable.exe
+            release/NoMorePwn-${{ steps.version.outputs.version }}-Setup.exe

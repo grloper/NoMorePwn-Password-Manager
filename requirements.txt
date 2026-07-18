@@ -1,8 +1,11 @@
-# NoMorePwn — local-first credential vault & security auditor
-# Python 3.10+
+# NoMorePwn — desktop password manager runtime dependencies
+# Python 3.10+  (Windows / macOS / Linux)
 
-streamlit>=1.35        # local browser dashboard (binds to localhost)
-cryptography>=42.0     # AES-256-GCM authenticated encryption
-argon2-cffi>=23.1      # Argon2id key derivation (preferred KDF)
-zxcvbn>=4.4.28         # pattern-aware local password strength estimation
-requests>=2.32         # HIBP k-anonymity range queries (5 hash chars only)
+PySide6-Essentials>=6.7   # native GUI, system tray, QtSvg icons
+cryptography>=42.0        # AES-256-GCM authenticated encryption
+argon2-cffi>=23.1         # Argon2id key derivation (preferred KDF)
+zxcvbn>=4.4.28            # pattern-aware local password-strength estimation
+requests>=2.32            # HIBP k-anonymity range queries (5 hash chars only)
+
+# The legacy Streamlit dashboard (app.py) is optional and not needed for the
+# desktop app. If you want it: pip install "streamlit>=1.35"

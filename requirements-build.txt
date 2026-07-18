@@ -1,0 +1,4 @@
+# Build-time only (packaging the Windows .exe). Not needed to run from source.
+-r requirements.txt
+pyinstaller>=6.6     # freeze the app into NoMorePwn.exe
+pillow>=10.0         # generate the multi-size .ico from the vector logo

@@ -167,6 +167,24 @@ def update_credential_password(
     )
 
 
+def update_credential_meta(
+    conn: sqlite3.Connection,
+    cred_id: int,
+    service_name: str,
+    username: str,
+    notes_enc: bytes | None,
+    mfa_enabled: bool,
+    now_iso: str,
+) -> None:
+    """Update everything except the password (which has its own history path)."""
+    conn.execute(
+        "UPDATE credentials "
+        "SET service_name = ?, username = ?, notes_enc = ?, mfa_enabled = ?, updated_at = ? "
+        "WHERE id = ?",
+        (service_name, username, notes_enc, 1 if mfa_enabled else 0, now_iso, cred_id),
+    )
+
+
 def set_mfa_enabled(
     conn: sqlite3.Connection, cred_id: int, enabled: bool, now_iso: str
 ) -> None:

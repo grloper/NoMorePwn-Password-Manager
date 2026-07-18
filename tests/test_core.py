@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import crypto, strength, validation, vault
+from nomorepwn import crypto, generator, strength, validation, vault
 from nomorepwn import db as db_layer
 
 MASTER = "correct horse battery staple 42"
@@ -197,6 +197,57 @@ class VaultLifecycleTests(unittest.TestCase):
         cred_id = self.vault.add_credential("github.com", "alice", "pw")
         self.vault.set_mfa(cred_id, True)
         self.assertTrue(self.vault.list_credentials()[0]["mfa_enabled"])
+
+    def test_update_credential_metadata(self):
+        cred_id = self.vault.add_credential("github.com", "alice", "pw", "old notes", False)
+        self.vault.update_credential(cred_id, "gitlab.com", "alice2", "new notes", True)
+        cred = self.vault.list_credentials()[0]
+        self.assertEqual(cred["service_name"], "gitlab.com")
+        self.assertEqual(cred["username"], "alice2")
+        self.assertTrue(cred["mfa_enabled"])
+        self.assertEqual(self.vault.reveal_notes(cred_id), "new notes")
+        # Password is untouched by a metadata edit.
+        self.assertEqual(self.vault.reveal_password(cred_id), "pw")
+
+    def test_update_credential_duplicate_rejected(self):
+        a = self.vault.add_credential("github.com", "alice", "pw")
+        self.vault.add_credential("gitlab.com", "bob", "pw2")
+        with self.assertRaises(vault.DuplicateCredentialError):
+            # Renaming 'a' onto the (gitlab.com, bob) pair must be rejected.
+            self.vault.update_credential(a, "gitlab.com", "bob", "", False)
+
+
+class GeneratorTests(unittest.TestCase):
+    def test_password_length_and_classes(self):
+        opts = generator.PasswordOptions(length=24)
+        pw = generator.generate_password(opts)
+        self.assertEqual(len(pw), 24)
+        self.assertTrue(any(c.islower() for c in pw))
+        self.assertTrue(any(c.isupper() for c in pw))
+        self.assertTrue(any(c.isdigit() for c in pw))
+
+    def test_password_avoids_ambiguous(self):
+        opts = generator.PasswordOptions(length=60, avoid_ambiguous=True)
+        pw = generator.generate_password(opts)
+        self.assertFalse(any(c in generator.AMBIGUOUS for c in pw))
+
+    def test_password_respects_disabled_classes(self):
+        opts = generator.PasswordOptions(
+            length=40, use_upper=False, use_symbols=False, use_digits=False
+        )
+        pw = generator.generate_password(opts)
+        self.assertTrue(all(c in generator.LOWER for c in pw))
+
+    def test_passwords_are_unique(self):
+        opts = generator.PasswordOptions(length=24)
+        pws = {generator.generate_password(opts) for _ in range(50)}
+        self.assertEqual(len(pws), 50)
+
+    def test_passphrase(self):
+        phrase = generator.generate_passphrase(words=4, separator="-", add_number=True)
+        parts = phrase.split("-")
+        self.assertEqual(len(parts), 5)  # 4 words + trailing number
+        self.assertTrue(parts[-1].isdigit())
 
 
 class SqlInjectionPolicyTests(unittest.TestCase):

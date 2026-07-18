@@ -18,6 +18,13 @@ __pycache__/
 .venv/
 venv/
 
+# Build artifacts (the spec, installer script, and make_icon.py stay tracked)
+/dist/
+/build/_work/
+/build/_build.log
+/release/
+*.spec.bak
+
 # Tooling
 .pytest_cache/
 .streamlit/secrets.toml

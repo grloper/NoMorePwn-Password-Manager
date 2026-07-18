@@ -217,6 +217,42 @@ class Vault:
                 changed_at_iso=now,
             )
 
+    def update_credential(
+        self,
+        cred_id: int,
+        service_name: str,
+        username: str,
+        notes: str = "",
+        mfa_enabled: bool = False,
+    ) -> None:
+        """Edit a credential's metadata and notes (not its password).
+
+        The password keeps its own tamper-evident history, so password
+        changes go through :meth:`update_password`; this handles the
+        renamable/editable fields. Notes are re-encrypted under the row's
+        existing UUID-bound AAD.
+        """
+        service_name = validation.validate_service_name(service_name)
+        username = validation.validate_username(username)
+        notes = validation.validate_notes(notes)
+        with db.connect(self.db_path) as conn:
+            row = db.get_credential(conn, cred_id)
+            if row is None:
+                raise VaultError("Credential not found.")
+            existing = db.find_credential(conn, service_name, username)
+            if existing is not None and existing["id"] != cred_id:
+                raise DuplicateCredentialError(
+                    f"An entry for {service_name} / {username} already exists."
+                )
+            notes_enc = (
+                crypto.encrypt(self._key, notes.encode("utf-8"), _notes_aad(row["uuid"]))
+                if notes
+                else None
+            )
+            db.update_credential_meta(
+                conn, cred_id, service_name, username, notes_enc, mfa_enabled, _now_iso()
+            )
+
     def set_mfa(self, cred_id: int, enabled: bool) -> None:
         with db.connect(self.db_path) as conn:
             if db.get_credential(conn, cred_id) is None:

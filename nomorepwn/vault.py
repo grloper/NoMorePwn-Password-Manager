@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import crypto, db, validation
+from . import backup, crypto, db, validation
+
+# Meta keys for the optional separate backup passphrase.
+_BK_NAME = "backup_kdf_name"
+_BK_PARAMS = "backup_kdf_params"
+_BK_SALT = "backup_kdf_salt"
+_BK_WRAPPED = "backup_key_wrapped"
+_BACKUP_KEY_AAD = "vault:backup-key"
 
 
 class VaultError(Exception):
@@ -304,6 +311,103 @@ class Vault:
             }
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Encrypted backups
+    # ------------------------------------------------------------------
+
+    def set_backup_passphrase(self, passphrase: str) -> None:
+        """Protect backups with a secret *other than* the master password.
+
+        The derived backup key is stored wrapped under the master key, so
+        automatic backups keep working without prompting — while the
+        backup FILE still needs this passphrase to open.
+        """
+        if len(passphrase) < 8:
+            raise VaultError("Backup passphrase must be at least 8 characters.")
+        salt = crypto.generate_salt()
+        kdf_name, kdf_params = crypto.default_kdf()
+        backup_key = crypto.derive_key(passphrase, salt, kdf_name, kdf_params)
+        wrapped = crypto.encrypt(self._key, backup_key, _BACKUP_KEY_AAD)
+        with db.connect(self.db_path) as conn:
+            db.set_meta(conn, _BK_NAME, kdf_name)
+            db.set_meta(conn, _BK_PARAMS, crypto.kdf_params_to_json(kdf_params))
+            db.set_meta(conn, _BK_SALT, salt.hex())
+            db.set_meta(conn, _BK_WRAPPED, wrapped.hex())
+
+    def clear_backup_passphrase(self) -> None:
+        """Fall back to protecting backups with the master password."""
+        with db.connect(self.db_path) as conn:
+            for key in (_BK_NAME, _BK_PARAMS, _BK_SALT, _BK_WRAPPED):
+                db.delete_meta(conn, key)
+
+    def has_backup_passphrase(self) -> bool:
+        with db.connect(self.db_path) as conn:
+            return db.get_meta(conn, _BK_WRAPPED) is not None
+
+    def backup_material(self) -> dict:
+        """Key + KDF metadata used to seal (and later re-open) a backup."""
+        with db.connect(self.db_path) as conn:
+            wrapped = db.get_meta(conn, _BK_WRAPPED)
+            if wrapped:
+                try:
+                    key = crypto.decrypt(
+                        self._key, bytes.fromhex(wrapped), _BACKUP_KEY_AAD
+                    )
+                except crypto.DecryptionError as exc:
+                    raise VaultError("Stored backup key is corrupted.") from exc
+                return {
+                    "key": key,
+                    "mode": backup.MODE_PASSPHRASE,
+                    "kdf_name": db.get_meta(conn, _BK_NAME),
+                    "kdf_params": crypto.kdf_params_from_json(db.get_meta(conn, _BK_PARAMS)),
+                    "salt_hex": db.get_meta(conn, _BK_SALT),
+                }
+            # Default: seal under the vault's own master key, and record the
+            # vault's KDF metadata so a restore re-derives it from the
+            # master password alone.
+            return {
+                "key": self._key,
+                "mode": backup.MODE_MASTER,
+                "kdf_name": db.get_meta(conn, "kdf_name"),
+                "kdf_params": crypto.kdf_params_from_json(db.get_meta(conn, "kdf_params")),
+                "salt_hex": db.get_meta(conn, "kdf_salt"),
+            }
+
+    def write_backup(self, dest_path) -> "Path":
+        """Write an encrypted backup of this vault to ``dest_path``."""
+        material = self.backup_material()
+        return backup.write_backup(
+            self.db_path, dest_path, material["key"],
+            mode=material["mode"], kdf_name=material["kdf_name"],
+            kdf_params=material["kdf_params"], salt_hex=material["salt_hex"],
+        )
+
+    def merge_from(self, other: "Vault") -> tuple[int, int]:
+        """Copy credentials from ``other`` that this vault doesn't have.
+
+        Matching is by (service_name, username). Returns
+        ``(imported, skipped)``. Existing entries are never overwritten,
+        so importing is always additive and safe.
+        """
+        imported = skipped = 0
+        for cred in other.list_credentials():
+            try:
+                password = other.reveal_password(cred["id"])
+                notes = other.reveal_notes(cred["id"])
+            except Exception:
+                skipped += 1
+                continue
+            try:
+                self.add_credential(
+                    cred["service_name"], cred["username"], password,
+                    notes, bool(cred["mfa_enabled"]),
+                )
+            except (DuplicateCredentialError, validation.ValidationError, VaultError):
+                skipped += 1
+            else:
+                imported += 1
+        return imported, skipped
 
     # ------------------------------------------------------------------
     # Tamper-evidence sweep + age metric

@@ -32,6 +32,13 @@ class Settings:
     show_notifications: bool = True
     warn_unsaved_on_close: bool = True
 
+    # -- Automatic encrypted backups ------------------------------------
+    backup_enabled: bool = True
+    backup_dir: str = ""          # empty -> <data dir>/backups
+    backup_keep: int = 5          # generations retained (.nmpbak, .1, .2 …)
+    backup_last_at: str = ""      # ISO timestamp of the last successful run
+    backup_last_error: str = ""   # last failure, surfaced in Settings
+
     # -- persistence ----------------------------------------------------
 
     @classmethod
@@ -60,3 +67,9 @@ class Settings:
     def autolock_ms(self) -> int:
         """Auto-lock interval in milliseconds (0 disables auto-lock)."""
         return max(0, int(self.autolock_minutes)) * 60 * 1000
+
+    def backup_directory(self) -> Path:
+        """Where backups are written (defaults to <data dir>/backups)."""
+        if self.backup_dir:
+            return Path(self.backup_dir)
+        return config.DATA_DIR / "backups"

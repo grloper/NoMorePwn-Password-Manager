@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from nomorepwn.settings import CLOSE_QUIT, CLOSE_TRAY
@@ -53,6 +54,65 @@ def confirm(parent, title: str, message: str, confirm_text: str = "Confirm",
     lay.addLayout(btns)
 
     return dlg.exec() == QDialog.Accepted
+
+
+def ask_new_passphrase(parent, title: str, message: str, min_length: int = 8) -> str | None:
+    """Prompt for a new passphrase twice. Returns None if cancelled."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setModal(True)
+    dlg.setMinimumWidth(440)
+    p = theme.active()
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(26, 24, 26, 22)
+    lay.setSpacing(10)
+
+    lay.addWidget(components.heading(title, "H3"))
+    msg = QLabel(message)
+    msg.setObjectName("Muted")
+    msg.setWordWrap(True)
+    lay.addWidget(msg)
+
+    first = QLineEdit()
+    first.setPlaceholderText(f"At least {min_length} characters")
+    components.add_reveal_action(first)
+    lay.addWidget(first)
+    second = QLineEdit()
+    second.setPlaceholderText("Confirm passphrase")
+    components.add_reveal_action(second)
+    lay.addWidget(second)
+
+    warn = QLabel("If you lose this passphrase, backups sealed with it cannot be opened — "
+                  "not even with your master password.")
+    warn.setWordWrap(True)
+    warn.setStyleSheet(f"color:{p.warning}; font-size:12px;")
+    lay.addWidget(warn)
+
+    error = QLabel("")
+    error.setStyleSheet(f"color:{p.danger}; font-size:12px; font-weight:600;")
+    lay.addWidget(error)
+
+    btns = QHBoxLayout()
+    btns.addStretch(1)
+    cancel = components.button("Cancel", object_name="Ghost")
+    cancel.clicked.connect(dlg.reject)
+    btns.addWidget(cancel)
+    ok = components.primary_button("Set passphrase", "check")
+    btns.addWidget(ok)
+    lay.addLayout(btns)
+
+    def submit():
+        if len(first.text()) < min_length:
+            error.setText(f"Use at least {min_length} characters.")
+            return
+        if first.text() != second.text():
+            error.setText("The two entries don't match.")
+            return
+        dlg.accept()
+
+    ok.clicked.connect(submit)
+    second.returnPressed.connect(submit)
+    return first.text() if dlg.exec() == QDialog.Accepted else None
 
 
 class _OptionCard(QFrame):

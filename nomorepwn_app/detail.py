@@ -253,6 +253,7 @@ class CredentialDetail(QWidget):
             if vlt:
                 vlt.delete_credential(self._cred["id"])
                 self._ctx.toast.show("Item deleted", "success")
+                self._ctx.request_backup()
                 self.deleted.emit()
 
 

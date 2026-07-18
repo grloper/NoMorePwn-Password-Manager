@@ -18,6 +18,11 @@ class AppContext:
     clipboard: ClipboardManager
     notify: Callable[[str, str], None]           # tray balloon (title, message)
     mark_activity: Callable[[], None] = lambda: None
+    # Called after any change to the vault so the encrypted backup refreshes.
+    request_backup: Callable[[], None] = lambda: None
+    backup_now: Callable[[], None] = lambda: None
+    open_restore: Callable[[], None] = lambda: None
+    get_vault: Callable[[], object] = lambda: None
 
     def copy_secret(self, text: str, label: str = "Copied to clipboard") -> None:
         if not text:

@@ -76,6 +76,29 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
 
 
+def snapshot_bytes(db_path: str | Path) -> bytes:
+    """Return a consistent byte-for-byte copy of the vault database.
+
+    Uses SQLite's online-backup API rather than reading the file directly,
+    so a snapshot taken while another connection is mid-write is still a
+    valid database (never a torn page).
+    """
+    import tempfile
+
+    src = sqlite3.connect(str(db_path))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "snapshot.db"
+            dst = sqlite3.connect(str(dest))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+            return dest.read_bytes()
+    finally:
+        src.close()
+
+
 # --------------------------------------------------------------------------
 # vault_meta
 # --------------------------------------------------------------------------
@@ -93,6 +116,10 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
         "SELECT value FROM vault_meta WHERE key = ?", (key,)
     ).fetchone()
     return row["value"] if row else None
+
+
+def delete_meta(conn: sqlite3.Connection, key: str) -> None:
+    conn.execute("DELETE FROM vault_meta WHERE key = ?", (key,))
 
 
 # --------------------------------------------------------------------------

@@ -226,6 +226,7 @@ class CredentialEditor(QWidget):
         self._ctx.toast.show(
             "Item saved" if self._mode == "edit" else "Item added to vault", "success"
         )
+        self._ctx.request_backup()
         self.saved.emit()
 
 

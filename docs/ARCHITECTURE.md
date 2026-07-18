@@ -138,32 +138,64 @@ matched — each prefix bucket contains hundreds of unrelated hashes
 pad responses so response length can't fingerprint the bucket either.
 Checks run only when you click the button — never automatically.
 
-## 7. Zero-knowledge backup / sync strategy
+## 7. Automatic zero-knowledge backups
 
-`scripts/backup_tool.py export` wraps the **entire vault file** in one
-more AES-256-GCM layer, keyed from the master password with a *fresh*
-salt (backup key ≠ vault key). The resulting `.nmpbak` blob reveals
-nothing — not even the schema or row count.
+`nomorepwn/backup.py` wraps a **consistent snapshot of the entire vault**
+in one more AES-256-GCM layer. The resulting `.nmpbak` blob reveals
+nothing — not even the schema, service names, or row count.
 
-Recommended free-tier sync options (the provider only ever stores
-ciphertext):
+```
+magic "NMPBAK2\n" | 4-byte BE header length | header JSON
+                  | nonce (12) | ciphertext+tag
+```
 
-| Option | Flow |
-|---|---|
-| Google Drive / Dropbox | Drop the `.nmpbak` into a synced folder (manually or via cron) |
-| Supabase Storage / S3 | `curl -X POST` the blob to a private bucket |
-| Git private repo | Commit the blob — it's small and opaque (don't commit `vault.db` itself) |
-| Syncthing | Peer-to-peer sync of the blob between your own devices, no cloud at all |
+The header carries only non-secret KDF metadata (name, params, salt) and
+a timestamp, and is passed verbatim as the GCM **additional authenticated
+data** — so an attacker cannot downgrade the KDF parameters or swap the
+salt without failing authentication.
 
-Restore anywhere with `backup_tool.py restore` + the master password.
-Automating this later is a cron job around `export` — no code changes.
+The snapshot is taken through SQLite's online-backup API rather than by
+reading the file, so a backup started mid-write is still a valid database.
+
+### Two protection modes
+
+| Mode | Sealed under | Opened with | Why |
+|---|---|---|---|
+| `master` (default) | The vault's own master key | Your master password | Zero configuration: the key is already in memory while unlocked, and the header records the vault's KDF salt so a restore re-derives it. |
+| `passphrase` | A key derived from a *separate* backup passphrase | That passphrase — **the master password will not open it** | For backups stored somewhere you'd rather not tie to your master password. |
+
+In `passphrase` mode the derived backup key is also stored *inside the
+vault*, wrapped under the master key (AAD `vault:backup-key`). That keeps
+automatic backups friction-free — no prompting on every write — and costs
+nothing: the vault is itself encrypted, and the backup **file** still
+cannot be opened without the passphrase.
+
+### Lifecycle
+
+Every mutation marks the vault dirty; a 4-second debounce collapses bursts
+of edits into one write on a worker thread. Locking and quitting flush
+**synchronously first**, because both drop the master key moments later
+and a deferred backup would be silently lost. Writes are atomic
+(temp file + `replace`) and rotate `N` generations (`.nmpbak`, `.1`, `.2`
+…) so a truncated newest copy can't take the only backup with it.
+
+Restoring a *different* vault over the current one deliberately discards
+any queued backup and forces a re-unlock: the master key in memory belongs
+to the old vault and would seal the new database under a key its header
+does not describe.
+
+Because the blob is opaque ciphertext, the sync provider is untrusted by
+construction — point the backup folder at Google Drive, Dropbox, OneDrive,
+Syncthing, or a USB stick and the provider only ever holds random-looking
+bytes.
 
 ## 8. Threat model summary
 
 | Threat | Defense |
 |---|---|
 | Stolen laptop / copied `vault.db` | Argon2id + AES-256-GCM; offline brute-force is the only attack, throttled by the KDF |
-| Cloud provider snooping backups | Blob is GCM ciphertext keyed by a password the provider never sees |
+| Cloud provider snooping backups | Blob is GCM ciphertext keyed by a secret the provider never sees; header is authenticated (no KDF downgrade) |
+| Backup file stolen on its own | Unopenable without the master password — or, in passphrase mode, without a secret the master password cannot reveal |
 | DB edited outside the app | Launch-time sweep: SHA-256 checksums + history cross-check + GCM tags |
 | Ciphertext swapped between rows | Per-row AAD binding fails GCM authentication |
 | SQL injection | Parameterized-only DB layer + allowlist validation + policy test |

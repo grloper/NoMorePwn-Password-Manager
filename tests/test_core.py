@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import crypto, generator, strength, validation, vault
+from nomorepwn import backup, crypto, generator, strength, validation, vault
 from nomorepwn import db as db_layer
 
 MASTER = "correct horse battery staple 42"
@@ -248,6 +248,138 @@ class GeneratorTests(unittest.TestCase):
         parts = phrase.split("-")
         self.assertEqual(len(parts), 5)  # 4 words + trailing number
         self.assertTrue(parts[-1].isdigit())
+
+
+class BackupTests(unittest.TestCase):
+    """Encrypted backups: round-trip, wrong secrets, tamper, rotation, merge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.db_path = self.dir / "vault.db"
+        vault.create_vault(self.db_path, MASTER)
+        self.vault = vault.Vault.unlock(self.db_path, MASTER)
+        self.vault.add_credential("github.com", "alice", "s3cret-pass", "notes here", True)
+        self.vault.add_credential("gmail.com", "bob", "another-pass")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    # -- master-password mode -------------------------------------------
+
+    def test_backup_roundtrip_master_mode(self):
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        header = backup.read_header(dest.read_bytes())
+        self.assertEqual(header["mode"], backup.MODE_MASTER)
+
+        target = self.dir / "restored.db"
+        backup.restore_to_path(dest.read_bytes(), MASTER, target)
+        restored = vault.Vault.unlock(target, MASTER)
+        creds = restored.list_credentials()
+        self.assertEqual(len(creds), 2)
+        github = next(c for c in creds if c["service_name"] == "github.com")
+        self.assertEqual(restored.reveal_password(github["id"]), "s3cret-pass")
+        self.assertEqual(restored.reveal_notes(github["id"]), "notes here")
+
+    def test_backup_rejects_wrong_password(self):
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        with self.assertRaises(backup.BackupPasswordError):
+            backup.open_blob(dest.read_bytes(), "definitely not the password")
+
+    def test_backup_plaintext_never_present(self):
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        raw = dest.read_bytes()
+        self.assertNotIn(b"s3cret-pass", raw)
+        self.assertNotIn(b"github.com", raw)   # even metadata is sealed
+
+    def test_backup_detects_tampering(self):
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        raw = bytearray(dest.read_bytes())
+        raw[-1] ^= 0xFF
+        with self.assertRaises(backup.BackupPasswordError):
+            backup.open_blob(bytes(raw), MASTER)
+
+    def test_backup_header_is_authenticated(self):
+        """Editing the header's KDF params must fail decryption, not silently
+        weaken it — the header is the GCM additional authenticated data."""
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        raw = dest.read_bytes()
+        header = backup.read_header(raw)
+        tampered = raw.replace(header["salt"].encode(), (b"0" * len(header["salt"])))
+        self.assertNotEqual(tampered, raw)
+        with self.assertRaises(backup.BackupError):
+            backup.open_blob(tampered, MASTER)
+
+    def test_rejects_non_backup_file(self):
+        with self.assertRaises(backup.BackupFormatError):
+            backup.read_header(b"just some random bytes")
+
+    # -- separate-passphrase mode ---------------------------------------
+
+    def test_backup_passphrase_mode(self):
+        phrase = "a different backup phrase"
+        self.vault.set_backup_passphrase(phrase)
+        self.assertTrue(self.vault.has_backup_passphrase())
+
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        blob = dest.read_bytes()
+        self.assertEqual(backup.read_header(blob)["mode"], backup.MODE_PASSPHRASE)
+
+        # The master password must NOT open a passphrase-sealed backup.
+        with self.assertRaises(backup.BackupPasswordError):
+            backup.open_blob(blob, MASTER)
+        # The passphrase must.
+        target = self.dir / "restored.db"
+        backup.restore_to_path(blob, phrase, target)
+        # The restored vault is still unlocked by the MASTER password.
+        self.assertEqual(len(vault.Vault.unlock(target, MASTER).list_credentials()), 2)
+
+    def test_clearing_passphrase_returns_to_master_mode(self):
+        self.vault.set_backup_passphrase("a different backup phrase")
+        self.vault.clear_backup_passphrase()
+        self.assertFalse(self.vault.has_backup_passphrase())
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        self.assertEqual(backup.read_header(dest.read_bytes())["mode"], backup.MODE_MASTER)
+        backup.open_blob(dest.read_bytes(), MASTER)  # must not raise
+
+    # -- rotation & merge -----------------------------------------------
+
+    def test_rotation_keeps_generations(self):
+        dest = self.dir / "b.nmpbak"
+        for _ in range(4):
+            backup.rotate(dest, keep=3)
+            self.vault.write_backup(dest)
+        self.assertTrue(dest.exists())
+        self.assertTrue(dest.with_suffix(dest.suffix + ".1").exists())
+        self.assertTrue(dest.with_suffix(dest.suffix + ".2").exists())
+        # keep=3 means primary + .1 + .2, never a .3
+        self.assertFalse(dest.with_suffix(dest.suffix + ".3").exists())
+
+    def test_merge_is_additive_and_skips_duplicates(self):
+        other_db = self.dir / "other.db"
+        vault.create_vault(other_db, MASTER)
+        other = vault.Vault.unlock(other_db, MASTER)
+        other.add_credential("github.com", "alice", "DIFFERENT-pass")  # duplicate
+        other.add_credential("newsite.com", "carol", "brand-new-pass", "note", True)
+
+        imported, skipped = self.vault.merge_from(other)
+        self.assertEqual((imported, skipped), (1, 1))
+        creds = {c["service_name"]: c for c in self.vault.list_credentials()}
+        self.assertIn("newsite.com", creds)
+        # The pre-existing entry was NOT overwritten.
+        github = creds["github.com"]
+        self.assertEqual(self.vault.reveal_password(github["id"]), "s3cret-pass")
+
+    def test_snapshot_is_a_valid_database(self):
+        raw = db_layer.snapshot_bytes(self.db_path)
+        self.assertTrue(raw.startswith(b"SQLite format 3\x00"))
 
 
 class SqlInjectionPolicyTests(unittest.TestCase):

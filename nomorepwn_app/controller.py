@@ -23,6 +23,7 @@ from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 
 from . import startup, theme, workers
+from .backup_manager import BackupManager
 from .context import AppContext
 from .dialogs import CloseChoiceDialog, confirm
 from .main_window import MainWindow
@@ -55,12 +56,17 @@ class AppController(QObject):
         # Core objects
         self.clipboard = ClipboardManager()
         self.window = MainWindow(self.db_path)
+        self.backups = BackupManager(self.settings, lambda: self.vault, self)
         self.ctx = AppContext(
             settings=self.settings,
             toast=self.window.toast,
             clipboard=self.clipboard,
             notify=self._notify,
             mark_activity=self._reset_autolock,
+            request_backup=self.backups.mark_dirty,
+            backup_now=self.backups.backup_now,
+            open_restore=self.open_restore,
+            get_vault=lambda: self.vault,
         )
         self.window.set_context(self.ctx)
         self.tray = TrayIcon(self)
@@ -78,6 +84,8 @@ class AppController(QObject):
         self.tray.show_requested.connect(self.show_window)
         self.tray.lock_requested.connect(lambda: self.lock(manual=True))
         self.tray.quit_requested.connect(self.quit)
+        self.backups.failed.connect(
+            lambda msg: self.ctx.toast.show(f"Backup failed: {msg}", "error", 5000))
 
         app.installEventFilter(self)
 
@@ -112,6 +120,7 @@ class AppController(QObject):
         self._present_window()
         self._reset_autolock()
         self._run_integrity_sweep(vlt)
+        self.backups.ensure_initial()
 
     def _run_integrity_sweep(self, vlt: "vault.Vault") -> None:
         def done(issues):
@@ -123,7 +132,11 @@ class AppController(QObject):
                              f"{len(issues)} integrity issue(s) detected in your vault.")
         workers.run_async(vlt.verify_integrity, done, lambda e: None)
 
-    def lock(self, manual: bool = False, notify: bool = False) -> None:
+    def lock(self, manual: bool = False, notify: bool = False, flush: bool = True) -> None:
+        # Flush first: locking drops the master key, and a pending backup
+        # can't be written without it.
+        if flush:
+            self.backups.flush_sync()
         if self.vault is not None:
             self.vault.lock()
             self.vault = None
@@ -186,11 +199,13 @@ class AppController(QObject):
                 self.settings.close_action = action
                 self.settings.save()
 
-        # Both paths lock the vault first.
-        self.lock()
         if action == CLOSE_QUIT:
+            # quit() locks, hides, and exits — going through lock() first
+            # would rebuild the unlock screen and leave it on screen while
+            # the process tears down.
             self.quit()
         else:  # CLOSE_TRAY
+            self.lock()
             self.window.hide()
             if not self._tray_hint_shown:
                 self._notify("Still running",
@@ -199,15 +214,49 @@ class AppController(QObject):
                 self._tray_hint_shown = True
 
     def quit(self) -> None:
+        """Lock, tear the UI down, and exit.
+
+        The window and tray icon are hidden *before* the event loop stops
+        so the app visually disappears the instant you choose Quit, rather
+        than lingering on screen while the process tears down.
+        """
         if self._quitting:
             return
         self._quitting = True
+        self.autolock.stop()
+        self.backups.flush_sync()      # write any pending backup while we still hold the key
         if self.vault is not None:
             self.vault.lock()
             self.vault = None
         self.clipboard._wipe()
+        self.window.teardown_shell()
+        self.window.hide()
         self.tray.hide()
         self.app.quit()
+
+    # ------------------------------------------------------------------
+    # Backup / restore
+    # ------------------------------------------------------------------
+
+    def open_restore(self) -> None:
+        from PySide6.QtWidgets import QDialog
+
+        from .restore_dialog import RestoreDialog
+
+        dlg = RestoreDialog(self.window, self.db_path, lambda: self.vault, self.ctx)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        if dlg.outcome == "replaced":
+            # The database on disk is a different vault now, so the key we
+            # hold no longer describes it: drop any queued backup and force
+            # a fresh unlock rather than flushing stale key material.
+            self.backups.discard_pending()
+            self.lock(flush=False)
+            self.ctx.toast.show(dlg.summary, "success", 7000)
+        else:
+            if self.window._shell is not None:
+                self.window._shell.set_vault(self.vault)
+            self.ctx.toast.show(dlg.summary, "success", 5000)
 
     # ------------------------------------------------------------------
     # Settings changes

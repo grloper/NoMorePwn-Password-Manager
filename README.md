@@ -44,6 +44,7 @@ NoMorePwn deletes that trade-off. Your vault is **one encrypted SQLite file on y
 | **Works fully offline** | ✅ 100% | ⚠️ Partial | ⚠️ Partial | ✅ |
 | **Encryption** | Argon2id + AES-256-GCM | Vendor-controlled | OS keychain | 🤡 None |
 | **Detects file tampering** | ✅ GCM + SHA-256 sweep | ❌ Opaque | ❌ | ❌ |
+| **Automatic encrypted backup** | ✅ Every change, offline | ✅ (their servers) | ❌ | ❌ |
 | **Breach check without leaking** | ✅ k-anonymity (5 chars) | ✅ / varies | ⚠️ | ❌ |
 | **Auditable** | ✅ Read it in an afternoon | ❌ Closed source | ❌ | — |
 | **Cost** | **$0, forever** | $36+/yr | Free-ish | Free |
@@ -109,6 +110,9 @@ Scores your vault 0–100 and surfaces weak, reused, stale, and MFA-less account
 🎲 **Generator with a conscience.**
 CSPRNG-backed (`secrets`, never `random`) passwords and passphrases with live zxcvbn scoring — plus a clipboard that **wipes itself** after 20s so your password doesn't linger.
 
+💾 **Backups you never have to think about.**
+Every change refreshes a sealed `.nmpbak` copy (5 generations kept), flushed before the vault locks so nothing is ever lost. Point it at Dropbox/OneDrive and your backup syncs offsite as **ciphertext** — optionally locked behind a *separate* passphrase, so the backup file stays useless even to someone holding your master password.
+
 ## 🧱 Tech stack
 
 **Python 3.10+** · **PySide6 (Qt 6)** native UI · **SQLite** as a dumb ciphertext container · **cryptography** (AES-256-GCM) · **argon2-cffi** (Argon2id) · **zxcvbn** (offline strength) · **PyInstaller** + **Inno Setup** packaging · **GitHub Actions** for one-push releases.
@@ -124,15 +128,27 @@ Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, ke
 
 ## 🗄 Where your data lives
 
-`%APPDATA%\NoMorePwn\vault.db` (encrypted) + `settings.json` (non-secret prefs).
+`%APPDATA%\NoMorePwn\vault.db` (encrypted) + `settings.json` (non-secret prefs)
++ `backups\vault-backup.nmpbak` (sealed auto-backup, plus `.1`, `.2` … generations).
 Point `NOMOREPWN_DATA` anywhere else — an encrypted volume, a USB stick — and it just works.
 
-**Two power tools ship alongside the app** (not yet in the GUI — PRs welcome):
+### 💾 Backup & restore
+
+Backups run themselves. **Settings → Encrypted backups** lets you change the
+folder (put it in a synced cloud folder for free offsite backup), how many
+generations to keep, and whether the backup opens with your **master password**
+(default) or a **separate backup passphrase**.
+
+To get your passwords back — **Settings → Restore or import…**:
+- **Import missing items** — adds entries the current vault doesn't have. Never overwrites.
+- **Replace my whole vault** — restores the backup exactly (a safety copy is saved first).
+
+Same thing from the terminal, for scripted/offsite copies:
 
 ```bash
-python scripts/import_notepad.py passwords.txt   # bulk-import a plaintext file, encrypted on the way in
-python scripts/backup_tool.py export --out vault.nmpbak   # zero-knowledge encrypted backup blob
+python scripts/backup_tool.py export --out vault.nmpbak   # zero-knowledge blob
 python scripts/backup_tool.py restore vault.nmpbak        # ...restore it anywhere
+python scripts/import_notepad.py passwords.txt            # bulk-import a plaintext file
 ```
 
 ## 🧪 Tests

@@ -1,92 +1,61 @@
 #!/usr/bin/env python3
 """Zero-knowledge encrypted backup — safe to drop in any cloud bucket.
 
-`export` seals the ENTIRE vault file (which already contains only
-ciphertext for secret fields) inside one more AES-256-GCM layer, keyed
-from your master password with a FRESH salt. The resulting `.nmpbak`
-blob leaks nothing: no schema, no service names, no row counts. Upload
-it to Google Drive, Supabase Storage, S3, email it to yourself —
-the provider only ever holds random-looking bytes.
+The desktop app keeps a backup refreshed automatically (Settings →
+Encrypted backups). This script is the command-line equivalent, useful
+for scripted/off-box copies and for restoring onto a fresh machine.
 
-`restore` reverses the process on any machine with this repo.
+`export` seals a consistent snapshot of the ENTIRE vault (already
+ciphertext for secret fields) inside one more AES-256-GCM layer. The
+resulting `.nmpbak` blob leaks nothing — no schema, no service names, no
+row counts.
 
-Blob layout:
-    magic "NMPBAK1\\n" | 4-byte big-endian header length | header JSON
-    (kdf name/params + salt hex, all non-secret) | nonce || ciphertext+tag
+`restore` reverses it. If the vault was configured with a separate backup
+passphrase, that passphrase (not the master password) opens the blob.
 
 Usage:
-    python scripts/backup_tool.py export  --out  vault-2026-07-12.nmpbak
-    python scripts/backup_tool.py restore vault-2026-07-12.nmpbak --db data/vault.db
+    python scripts/backup_tool.py export  --out vault-2026-07-18.nmpbak
+    python scripts/backup_tool.py restore vault-2026-07-18.nmpbak --force
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
-import json
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import config, crypto, vault
-
-MAGIC = b"NMPBAK1\n"
-BACKUP_AAD = "nomorepwn:backup:v1"
+from nomorepwn import backup, config, vault
 
 
 def export_backup(db_path: str, out_path: str, master_password: str) -> None:
-    # Verify the master password against the vault BEFORE exporting, so a
-    # typo can't produce a backup you can never open.
-    vault.Vault.unlock(db_path, master_password).lock()
-
-    salt = crypto.generate_salt()  # fresh salt: backup key != vault key
-    kdf_name, kdf_params = crypto.default_kdf()
-    key = crypto.derive_key(master_password, salt, kdf_name, kdf_params)
-
-    header = json.dumps(
-        {"kdf_name": kdf_name, "kdf_params": kdf_params, "salt": salt.hex()}
-    ).encode("utf-8")
-    sealed = crypto.encrypt(key, Path(db_path).read_bytes(), BACKUP_AAD)
-
-    out = Path(out_path)
-    out.write_bytes(MAGIC + struct.pack(">I", len(header)) + header + sealed)
-    print(f"Encrypted backup written: {out} ({out.stat().st_size:,} bytes)")
-    print("This blob is safe to store anywhere — it is AES-256-GCM ciphertext only.")
-
-
-def restore_backup(backup_path: str, db_path: str, master_password: str, force: bool) -> None:
-    raw = Path(backup_path).read_bytes()
-    if not raw.startswith(MAGIC):
-        raise SystemExit("ERROR: Not a NoMorePwn backup file (bad magic bytes).")
-
-    offset = len(MAGIC)
-    (header_len,) = struct.unpack(">I", raw[offset : offset + 4])
-    offset += 4
-    header = json.loads(raw[offset : offset + header_len].decode("utf-8"))
-    sealed = raw[offset + header_len :]
-
-    key = crypto.derive_key(
-        master_password,
-        bytes.fromhex(header["salt"]),
-        header["kdf_name"],
-        header["kdf_params"],
-    )
+    # Verify the master password BEFORE exporting, so a typo can't produce
+    # a backup you can never open.
+    unlocked = vault.Vault.unlock(db_path, master_password)
     try:
-        plaintext_db = crypto.decrypt(key, sealed, BACKUP_AAD)
-    except crypto.DecryptionError:
-        raise SystemExit(
-            "ERROR: Decryption failed — wrong master password or corrupted backup."
-        )
+        dest = unlocked.write_backup(out_path)
+        mode = unlocked.backup_material()["mode"]
+    finally:
+        unlocked.lock()
+
+    size = Path(dest).stat().st_size
+    secret = ("your separate backup passphrase" if mode == backup.MODE_PASSPHRASE
+              else "your master password")
+    print(f"Encrypted backup written: {dest} ({size:,} bytes)")
+    print(f"It can only be opened with {secret}.")
+
+
+def restore_backup(backup_path: str, db_path: str, secret: str, force: bool) -> None:
+    blob = Path(backup_path).read_bytes()
+    header = backup.read_header(blob)
+    print(backup.describe(header))
 
     target = Path(db_path)
     if target.exists() and not force:
-        raise SystemExit(
-            f"ERROR: {target} already exists. Pass --force to overwrite it."
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(plaintext_db)
+        raise SystemExit(f"ERROR: {target} already exists. Pass --force to overwrite it.")
+    backup.restore_to_path(blob, secret, target)
     print(f"Vault restored to: {target}")
 
 
@@ -104,17 +73,17 @@ def main() -> int:
     p_restore.add_argument("--force", action="store_true", help="Overwrite existing vault.")
 
     args = parser.parse_args()
-    master = getpass.getpass("Master password: ")
 
     try:
         if args.command == "export":
             if not vault.vault_exists(args.db):
                 print(f"ERROR: No vault at {args.db}.")
                 return 1
-            export_backup(args.db, args.out, master)
+            export_backup(args.db, args.out, getpass.getpass("Master password: "))
         else:
-            restore_backup(args.backup, args.db, master, args.force)
-    except vault.VaultError as exc:
+            secret = getpass.getpass("Password/passphrase for this backup: ")
+            restore_backup(args.backup, args.db, secret, args.force)
+    except (vault.VaultError, backup.BackupError) as exc:
         print(f"ERROR: {exc}")
         return 1
     return 0

@@ -37,7 +37,7 @@ available separately and does take POSIX syntax.
 ## Commands
 
 ```
-python -m unittest discover tests -v      # 149 tests, ~6s — from repo root
+python -m unittest discover tests -v      # 177 tests, ~8s — from repo root
 cd extension; npm install; npm test       # 52 checks, ~22s — NOT `npm ci` (lockfile gitignored)
 python NoMorePwn.py                       # runs against the REAL vault (see above)
 pip install -r requirements-build.txt     # covers both test and build deps
@@ -137,8 +137,14 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   overwritten. Every secret becomes permanently undecryptable, reported as "authentication failed".
 - `update_credential` is a **PUT, not a PATCH**. `notes=""` and `mfa_enabled=False` defaults erase
   notes and clear MFA, with no error and no history row. Read current values first.
-  `group_name` is the deliberate exception: it defaults to `None` meaning *leave unchanged*,
-  specifically so a new field would not repeat that data-loss trap. Pass `""` to clear it.
+  `group_name` and `alt_login` are the deliberate exceptions: both default to `None` meaning
+  *leave unchanged*, specifically so new fields would not repeat that data-loss trap. Pass `""`
+  to clear either one.
+- **Never move a login identifier into `notes`.** Notes are the one field the app can silently
+  destroy: `editor.load_edit` swallows a failed `reveal_notes` into `""` (`editor.py:193-197`) and
+  Save then writes NULL over the ciphertext. That is why the second identifier is its own
+  `alt_login` column and not a line in notes. It is also plaintext, like `username`, and is
+  **not** part of duplicate detection — identity stays `(service_name, username)`.
 - Group names are **plaintext**, like `service_name` and `username` beside them — filterable
   metadata, not secrets. Do not put anything sensitive in a group label. Grouping/display logic is
   a pure function (`groups.group_credentials`); the list view only renders what it returns.

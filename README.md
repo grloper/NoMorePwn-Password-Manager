@@ -111,7 +111,10 @@ Scores your vault 0–100 and surfaces weak, reused, stale, and MFA-less account
 CSPRNG-backed (`secrets`, never `random`) passwords and passphrases with live zxcvbn scoring — plus a clipboard that **wipes itself** after 20s so your password doesn't linger.
 
 🗂 **Groups that file themselves.**
-Sort entries into groups — pick from Email, Gaming, Banking & Finance, Work and more, or type your own. Add `gmail.com` or `steampowered.com` and the right group is suggested automatically from a catalogue of 116 known services (it only ever *suggests*, and never re-files something you already grouped). The list collapses into labelled sections and search matches group names too. Group labels are stored as **plaintext metadata** beside the service name — convenient to filter, so don't put secrets in them.
+Sort entries into groups — pick from Email, Gaming, Banking & Finance, Work and more, or type your own. Add `gmail.com` or `steampowered.com` and the right group is suggested automatically from a catalogue of 116 known services (it only ever *suggests*, and never re-files something you already grouped). Each group is a labelled section you can collapse with a click, search matches group names, and a search always reaches inside collapsed groups so a match can never hide. Group labels are stored as **plaintext metadata** beside the service name — convenient to filter, so don't put secrets in them.
+
+👥 **One login or two, without the mess.**
+Plenty of sites take either a username *or* an email. Add an optional **alternate login** and both are first-class: shown, copyable, and searchable. It stays hidden until you ask for it, so the common one-identifier case stays a two-field form. The username box also autocompletes from identifiers already in your vault — most people reuse a handful of addresses across dozens of sites, and it offers the most-used first.
 
 🧯 **Typos caught before they lock you out.**
 A password ending in a stray space is the classic copy-paste slip, and saving it silently means the login just fails later with no clue why. NoMorePwn spots leading/trailing whitespace, shows you the invisible character, and asks — it never trims your password for you, because that space might be real.

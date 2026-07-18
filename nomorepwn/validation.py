@@ -92,6 +92,29 @@ def validate_group_name(value: object) -> str:
     return value
 
 
+def validate_alt_login(value: object) -> str:
+    """Validate the optional second login identifier.
+
+    Same character rules as a username — it is the same kind of value, just
+    the one you use less often. Empty is valid and normal: most credentials
+    have a single identifier.
+    """
+    if value is None:
+        return ""
+    value = _require_str(value, "Alternate login").strip()
+    if not value:
+        return ""
+    if len(value) > MAX_USERNAME_LEN:
+        raise ValidationError(
+            f"Alternate login must be at most {MAX_USERNAME_LEN} characters.")
+    if not _USERNAME_RE.fullmatch(value):
+        raise ValidationError(
+            "Alternate login may only contain letters, digits, and . _ @ + - "
+            "and must start with a letter or digit."
+        )
+    return value
+
+
 def validate_password(value: object) -> str:
     value = _require_str(value, "Password")
     if not value:

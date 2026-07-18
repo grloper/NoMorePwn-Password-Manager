@@ -134,6 +134,11 @@ class CredentialDetail(QWidget):
         # -- Fields --------------------------------------------------
         self._lay.addWidget(_Field("Username", cred["username"], self._ctx, copy_label="Username copied"))
 
+        alt = cred.get("alt_login", "")
+        if alt:
+            self._lay.addWidget(_Field("Alternate login", alt, self._ctx,
+                                       copy_label="Alternate login copied"))
+
         try:
             pw = vlt.reveal_password(cred["id"]) if vlt else ""
         except Exception:

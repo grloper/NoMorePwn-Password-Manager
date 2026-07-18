@@ -272,6 +272,101 @@ class CredentialGroupUiTests(unittest.TestCase):
         self.assertEqual(self.vault.list_credentials(), [])
         self.assertTrue(any(k == "error" for k, _t in self.toasts), self.toasts)
 
+    def test_alternate_login_is_hidden_until_asked_for(self):
+        ed = self._editor()
+        ed.load_new()
+        self.assertTrue(ed.alt_row.isHidden(), "second field shown unprompted")
+        ed.alt_toggle.click()
+        self.assertFalse(ed.alt_row.isHidden())
+        self.assertIn("Remove", ed.alt_toggle.text())
+
+    def test_alternate_login_saves_and_reloads(self):
+        ed = self._editor()
+        ed.load_new()
+        ed.service.setText("steampowered.com")
+        ed.username.setText("ofek")
+        ed.password.setText("pw-123456")
+        ed.alt_toggle.click()
+        ed.alt_login.setText("ofek@gmail.com")
+        ed._save()
+
+        cred = next(c for c in self.vault.list_credentials()
+                    if c["service_name"] == "steampowered.com")
+        self.assertEqual(cred["alt_login"], "ofek@gmail.com")
+
+        ed2 = self._editor()
+        ed2.load_edit(cred)
+        self.assertFalse(ed2.alt_row.isHidden(), "existing alternate not shown on edit")
+        self.assertEqual(ed2.alt_login.text(), "ofek@gmail.com")
+
+    def test_toggling_off_clears_the_alternate_login(self):
+        cid = self.vault.add_credential("a.com", "u", "pw-123456", alt_login="me@x.com")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        ed = self._editor()
+        ed.load_edit(cred)
+        ed.alt_toggle.click()          # hide == remove
+        ed._save()
+        after = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(after["alt_login"], "")
+
+    def test_editing_something_else_keeps_the_alternate(self):
+        cid = self.vault.add_credential("a.com", "u", "pw-123456", alt_login="me@x.com")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        ed = self._editor()
+        ed.load_edit(cred)
+        ed.mfa.setChecked(True)
+        ed._save()
+        after = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(after["alt_login"], "me@x.com")
+
+    def test_username_autocomplete_is_populated_from_the_vault(self):
+        self.vault.add_credential("a.com", "me@gmail.com", "pw-123456")
+        self.vault.add_credential("b.com", "handle", "pw-123456", alt_login="alt@x.com")
+        ed = self._editor()
+        ed.load_new()
+        offered = ed._identifier_model.stringList()
+        for expected in ("me@gmail.com", "handle", "alt@x.com"):
+            self.assertIn(expected, offered)
+        self.assertIsNotNone(ed.username.completer())
+
+    def test_autocomplete_never_offers_a_password(self):
+        self.vault.add_credential("a.com", "me@gmail.com", "sup3r-s3cret-pw")
+        ed = self._editor()
+        ed.load_new()
+        self.assertNotIn("sup3r-s3cret-pw", ed._identifier_model.stringList())
+
+    def test_detail_view_shows_and_hides_the_alternate(self):
+        from PySide6.QtWidgets import QLabel
+
+        from nomorepwn_app.detail import CredentialDetail, _Field
+
+        def labels(cred):
+            view = CredentialDetail(lambda: self.vault, self.ctx)
+            view.show_credential(cred)
+            return [f.findChildren(QLabel)[0].text()
+                    for f in view.findChildren(_Field)]
+
+        cid = self.vault.add_credential("a.com", "u", "pw-123456", alt_login="me@x.com")
+        with_alt = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertIn("ALTERNATE LOGIN", labels(with_alt))
+
+        cid2 = self.vault.add_credential("b.com", "u2", "pw-123456")
+        without = next(c for c in self.vault.list_credentials() if c["id"] == cid2)
+        self.assertNotIn("ALTERNATE LOGIN", labels(without),
+                         "empty alternate rendered an empty field")
+
+    def test_search_matches_the_alternate_login(self):
+        from nomorepwn_app.view_vault import VaultView, _ItemRow
+
+        self.vault.add_credential("a.com", "handle1", "pw-123456", alt_login="me@gmail.com")
+        self.vault.add_credential("b.com", "handle2", "pw-123456")
+        view = VaultView(self.ctx)
+        view.set_vault(self.vault)
+        view.search.setText("me@gmail")
+        items = [view.list.itemWidget(view.list.item(i))
+                 for i in range(view.list.count())]
+        self.assertEqual(len([i for i in items if isinstance(i, _ItemRow)]), 1)
+
     def test_list_renders_group_headers_above_their_items(self):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QLabel
@@ -289,7 +384,7 @@ class CredentialGroupUiTests(unittest.TestCase):
         for i in range(view.list.count()):
             widget = view.list.itemWidget(view.list.item(i))
             if isinstance(widget, _GroupHeader):
-                seen.append(("header", widget.findChildren(QLabel)[0].text()))
+                seen.append(("header", widget.name_label.text()))
             elif isinstance(widget, _ItemRow):
                 seen.append(("item", view.list.item(i).data(Qt.UserRole)))
 
@@ -312,6 +407,79 @@ class CredentialGroupUiTests(unittest.TestCase):
                 self.assertFalse(
                     bool(item.flags() & Qt.ItemIsSelectable),
                     "a header is selectable — arrow keys would land on a non-item")
+
+    def _grouped_view(self):
+        from nomorepwn_app.view_vault import VaultView
+
+        self.vault.add_credential("gmail.com", "a", "pw-123456", group_name="Email")
+        self.vault.add_credential("outlook.com", "b", "pw-123456", group_name="Email")
+        self.vault.add_credential("steampowered.com", "c", "pw-123456", group_name="Gaming")
+        view = VaultView(self.ctx)
+        view.set_vault(self.vault)
+        return view
+
+    def _visible_items(self, view):
+        from nomorepwn_app.view_vault import _ItemRow
+
+        return [view.list.itemWidget(view.list.item(i))
+                for i in range(view.list.count())
+                if isinstance(view.list.itemWidget(view.list.item(i)), _ItemRow)]
+
+    def _header(self, view, label):
+        from nomorepwn_app.view_vault import _GroupHeader
+        from PySide6.QtWidgets import QLabel
+
+        for i in range(view.list.count()):
+            w = view.list.itemWidget(view.list.item(i))
+            if isinstance(w, _GroupHeader) and w.name_label.text() == label:
+                return w
+        return None
+
+    def test_clicking_a_group_header_collapses_it(self):
+        view = self._grouped_view()
+        self.assertEqual(len(self._visible_items(view)), 3)
+
+        self._header(view, "EMAIL").toggled.emit()
+
+        # The two Email rows are gone; Gaming's row stays.
+        self.assertEqual(len(self._visible_items(view)), 1)
+        self.assertIsNotNone(self._header(view, "EMAIL"), "header vanished with its items")
+        self.assertIsNotNone(self._header(view, "GAMING"))
+
+    def test_collapsing_is_reversible(self):
+        view = self._grouped_view()
+        self._header(view, "EMAIL").toggled.emit()
+        self.assertEqual(len(self._visible_items(view)), 1)
+        self._header(view, "EMAIL").toggled.emit()
+        self.assertEqual(len(self._visible_items(view)), 3)
+
+    def test_collapsed_group_still_reports_its_true_count(self):
+        from PySide6.QtWidgets import QLabel
+
+        view = self._grouped_view()
+        self._header(view, "EMAIL").toggled.emit()
+        tally = self._header(view, "EMAIL").count_label.text()
+        self.assertEqual(tally, "2", "collapsed group hid how many items it holds")
+
+    def test_collapse_survives_a_refresh(self):
+        view = self._grouped_view()
+        self._header(view, "EMAIL").toggled.emit()
+        view.refresh()
+        self.assertEqual(len(self._visible_items(view)), 1, "refresh forgot the collapse")
+
+    def test_searching_reveals_matches_inside_collapsed_groups(self):
+        """A hit hidden in a collapsed group reads as 'no results'."""
+        view = self._grouped_view()
+        self._header(view, "EMAIL").toggled.emit()
+        self.assertEqual(len(self._visible_items(view)), 1)
+
+        view.search.setText("gmail")
+        self.assertEqual(len(self._visible_items(view)), 1)
+        self.assertIsNotNone(self._header(view, "EMAIL"))
+
+        # Clearing the search restores the collapsed state.
+        view.search.setText("")
+        self.assertEqual(len(self._visible_items(view)), 1)
 
     def test_search_matches_group_names(self):
         from nomorepwn_app.view_vault import VaultView, _ItemRow

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_meta (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS credentials (
     notes_enc       BLOB,
     mfa_enabled     INTEGER NOT NULL DEFAULT 0 CHECK (mfa_enabled IN (0, 1)),
     group_name      TEXT    NOT NULL DEFAULT '',
+    alt_login       TEXT    NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     UNIQUE (service_name, username)
@@ -120,7 +121,22 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
         )
 
 
-_MIGRATIONS = {2: _migrate_to_v2}
+def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+    """v3: an optional second login identifier.
+
+    Plenty of sites accept either a handle or an email. The alternate lives in
+    its own column rather than in `notes` so it can be copied, searched and
+    autocompleted — and because notes are the one field the editor can destroy
+    on a failed decrypt. Identity stays `(service_name, username)`; the
+    alternate is never part of duplicate detection.
+    """
+    if "alt_login" not in credential_columns(conn):
+        conn.execute(
+            "ALTER TABLE credentials ADD COLUMN alt_login TEXT NOT NULL DEFAULT ''"
+        )
+
+
+_MIGRATIONS = {2: _migrate_to_v2, 3: _migrate_to_v3}
 
 
 def migrate(conn: sqlite3.Connection) -> tuple[int, int]:
@@ -201,12 +217,13 @@ def insert_credential(
     mfa_enabled: bool,
     now_iso: str,
     group_name: str = "",
+    alt_login: str = "",
 ) -> int:
     cursor = conn.execute(
         "INSERT INTO credentials "
         "(uuid, service_name, username, password_enc, password_sha256, "
-        " notes_enc, mfa_enabled, group_name, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " notes_enc, mfa_enabled, group_name, alt_login, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             uuid,
             service_name,
@@ -216,6 +233,7 @@ def insert_credential(
             notes_enc,
             1 if mfa_enabled else 0,
             group_name,
+            alt_login,
             now_iso,
             now_iso,
         ),
@@ -268,16 +286,34 @@ def update_credential_meta(
     mfa_enabled: bool,
     now_iso: str,
     group_name: str = "",
+    alt_login: str = "",
 ) -> None:
     """Update everything except the password (which has its own history path)."""
     conn.execute(
         "UPDATE credentials "
         "SET service_name = ?, username = ?, notes_enc = ?, mfa_enabled = ?, "
-        "    group_name = ?, updated_at = ? "
+        "    group_name = ?, alt_login = ?, updated_at = ? "
         "WHERE id = ?",
         (service_name, username, notes_enc, 1 if mfa_enabled else 0,
-         group_name, now_iso, cred_id),
+         group_name, alt_login, now_iso, cred_id),
     )
+
+
+def list_identifiers(conn: sqlite3.Connection) -> list[str]:
+    """Every login identifier in use, most-reused first, for autocomplete.
+
+    Unions `username` and `alt_login` so an address recorded as an alternate
+    on one entry is still offered as the primary on the next.
+    """
+    rows = conn.execute(
+        "SELECT value, COUNT(*) AS uses FROM ("
+        "    SELECT username  AS value FROM credentials WHERE username  <> '' "
+        "    UNION ALL "
+        "    SELECT alt_login AS value FROM credentials WHERE alt_login <> '' "
+        ") GROUP BY value COLLATE NOCASE "
+        "ORDER BY uses DESC, value COLLATE NOCASE"
+    ).fetchall()
+    return [row["value"] for row in rows]
 
 
 def list_group_names(conn: sqlite3.Connection) -> list[str]:

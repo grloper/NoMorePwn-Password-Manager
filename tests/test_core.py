@@ -212,14 +212,57 @@ class SchemaMigrationTests(unittest.TestCase):
         vlt.add_credential("github.com", "alice", "s3cret-pass", notes="my note")
         vlt.add_credential("gmail.com", "bob", "other-pass")
         vlt.lock()
-        # Drop the column and the version marker so this is genuinely v1.
+        # Drop every post-v1 column and the version marker so this is genuinely v1.
         conn = sqlite3.connect(str(self.path))
         try:
             conn.execute("ALTER TABLE credentials DROP COLUMN group_name")
+            conn.execute("ALTER TABLE credentials DROP COLUMN alt_login")
             conn.execute("DELETE FROM vault_meta WHERE key = 'schema_version'")
             conn.commit()
         finally:
             conn.close()
+
+    def _make_v2_vault(self) -> None:
+        """A vault from the *intermediate* version, to test a partial upgrade."""
+        vault.create_vault(self.path, MASTER)
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        vlt.add_credential("github.com", "alice", "s3cret-pass", group_name="Development")
+        vlt.lock()
+        conn = sqlite3.connect(str(self.path))
+        try:
+            conn.execute("ALTER TABLE credentials DROP COLUMN alt_login")
+            conn.execute("UPDATE vault_meta SET value = '2' WHERE key = 'schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v1_upgrades_through_every_step_in_one_unlock(self):
+        """A vault two versions behind must not need two launches."""
+        self._make_v1_vault()
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        try:
+            with db.connect(self.path) as conn:
+                cols = db.credential_columns(conn)
+                self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
+            self.assertIn("group_name", cols)   # from v2
+            self.assertIn("alt_login", cols)    # from v3
+            self.assertEqual(vlt.verify_integrity(), [])
+        finally:
+            vlt.lock()
+
+    def test_v2_vault_upgrades_to_v3_keeping_its_groups(self):
+        self._make_v2_vault()
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), 2)
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        try:
+            cred = vlt.list_credentials()[0]
+            self.assertEqual(cred["group_name"], "Development", "v2 data was lost")
+            self.assertEqual(cred["alt_login"], "")
+            self.assertEqual(vlt.reveal_password(cred["id"]), "s3cret-pass")
+        finally:
+            vlt.lock()
+        self.assertTrue(vault.pre_migration_backup_path(self.path, 2).exists())
 
     def test_v1_vault_is_detected_as_version_1(self):
         self._make_v1_vault()
@@ -371,6 +414,93 @@ class CredentialGroupTests(unittest.TestCase):
         cid = self.vault.add_credential("example.com", "u", "pw", group_name="  Gaming  ")
         cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
         self.assertEqual(cred["group_name"], "Gaming")
+
+
+class AlternateLoginTests(unittest.TestCase):
+    """The optional second identifier: stored, not buried in notes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "vault.db"
+        vault.create_vault(self.path, MASTER)
+        self.vault = vault.Vault.unlock(self.path, MASTER)
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.vault.lock)
+
+    def _cred(self, cred_id):
+        return next(c for c in self.vault.list_credentials() if c["id"] == cred_id)
+
+    def test_round_trips(self):
+        cid = self.vault.add_credential("steampowered.com", "ofek", "pw",
+                                        alt_login="ofek@gmail.com")
+        self.assertEqual(self._cred(cid)["alt_login"], "ofek@gmail.com")
+
+    def test_is_optional(self):
+        cid = self.vault.add_credential("example.com", "u", "pw")
+        self.assertEqual(self._cred(cid)["alt_login"], "")
+
+    def test_does_not_affect_duplicate_detection(self):
+        """Identity stays (service, username) — the alternate is not part of it."""
+        self.vault.add_credential("example.com", "u", "pw", alt_login="a@x.com")
+        with self.assertRaises(vault.DuplicateCredentialError):
+            self.vault.add_credential("example.com", "u", "pw2", alt_login="different@x.com")
+
+    def test_same_alt_login_on_many_entries_is_fine(self):
+        # The whole point: one address reused across many sites.
+        a = self.vault.add_credential("a.com", "ofek", "pw", alt_login="me@gmail.com")
+        b = self.vault.add_credential("b.com", "ofek2", "pw", alt_login="me@gmail.com")
+        self.assertEqual(self._cred(a)["alt_login"], self._cred(b)["alt_login"])
+
+    def test_update_preserves_it_by_default(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", alt_login="me@x.com")
+        self.vault.update_credential(cid, "example.com", "u", mfa_enabled=True)
+        self.assertEqual(self._cred(cid)["alt_login"], "me@x.com")
+
+    def test_update_can_clear_it_explicitly(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", alt_login="me@x.com")
+        self.vault.update_credential(cid, "example.com", "u", alt_login="")
+        self.assertEqual(self._cred(cid)["alt_login"], "")
+
+    def test_invalid_alt_login_is_rejected(self):
+        for bad in ("has space", "-leading", "a" * 129, "'; DROP TABLE credentials;--"):
+            with self.assertRaises(validation.ValidationError, msg=bad):
+                self.vault.add_credential(f"s{len(bad)}.com", "u", "pw", alt_login=bad)
+
+    def test_it_is_trimmed(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", alt_login="  me@x.com  ")
+        self.assertEqual(self._cred(cid)["alt_login"], "me@x.com")
+
+
+class IdentifierAutocompleteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "vault.db"
+        vault.create_vault(self.path, MASTER)
+        self.vault = vault.Vault.unlock(self.path, MASTER)
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.vault.lock)
+
+    def test_empty_vault_offers_nothing(self):
+        self.assertEqual(self.vault.list_identifiers(), [])
+
+    def test_most_reused_identifier_comes_first(self):
+        for i, service in enumerate(("a.com", "b.com", "c.com")):
+            self.vault.add_credential(service, "me@gmail.com", f"pw{i}")
+        self.vault.add_credential("d.com", "rare@example.com", "pw")
+        self.assertEqual(self.vault.list_identifiers()[0], "me@gmail.com")
+
+    def test_alternate_logins_are_offered_too(self):
+        self.vault.add_credential("a.com", "handle", "pw", alt_login="me@gmail.com")
+        self.assertCountEqual(self.vault.list_identifiers(), ["handle", "me@gmail.com"])
+
+    def test_identifiers_are_deduplicated(self):
+        self.vault.add_credential("a.com", "me@gmail.com", "pw")
+        self.vault.add_credential("b.com", "other", "pw", alt_login="me@gmail.com")
+        self.assertEqual(self.vault.list_identifiers().count("me@gmail.com"), 1)
+
+    def test_no_passwords_ever_leak_into_the_suggestions(self):
+        self.vault.add_credential("a.com", "me@gmail.com", "sup3r-s3cret-pw")
+        self.assertNotIn("sup3r-s3cret-pw", self.vault.list_identifiers())
 
 
 class GroupSuggestionTests(unittest.TestCase):

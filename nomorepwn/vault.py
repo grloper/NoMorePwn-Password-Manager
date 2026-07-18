@@ -203,12 +203,14 @@ class Vault:
         notes: str = "",
         mfa_enabled: bool = False,
         group_name: str = "",
+        alt_login: str = "",
     ) -> int:
         service_name = validation.validate_service_name(service_name)
         username = validation.validate_username(username)
         password = validation.validate_password(password)
         notes = validation.validate_notes(notes)
         group_name = validation.validate_group_name(group_name)
+        alt_login = validation.validate_alt_login(alt_login)
 
         cred_uuid = str(uuid_mod.uuid4())
         blob = crypto.encrypt(self._key, password.encode("utf-8"), _password_aad(cred_uuid))
@@ -236,6 +238,7 @@ class Vault:
                 mfa_enabled=mfa_enabled,
                 now_iso=now,
                 group_name=group_name,
+                alt_login=alt_login,
             )
             # Every version — including the first — gets a history row,
             # so the age metric and tamper sweep cover the whole lifetime.
@@ -276,6 +279,7 @@ class Vault:
         notes: str = "",
         mfa_enabled: bool = False,
         group_name: str | None = None,
+        alt_login: str | None = None,
     ) -> None:
         """Edit a credential's metadata and notes (not its password).
 
@@ -301,6 +305,12 @@ class Vault:
                 group_name = row["group_name"] if "group_name" in row.keys() else ""
             else:
                 group_name = validation.validate_group_name(group_name)
+            # Same None-means-unchanged contract as group_name, for the same
+            # reason: a PUT default must not silently erase a field.
+            if alt_login is None:
+                alt_login = row["alt_login"] if "alt_login" in row.keys() else ""
+            else:
+                alt_login = validation.validate_alt_login(alt_login)
             existing = db.find_credential(conn, service_name, username)
             if existing is not None and existing["id"] != cred_id:
                 raise DuplicateCredentialError(
@@ -313,13 +323,18 @@ class Vault:
             )
             db.update_credential_meta(
                 conn, cred_id, service_name, username, notes_enc, mfa_enabled,
-                _now_iso(), group_name,
+                _now_iso(), group_name, alt_login,
             )
 
     def list_groups(self) -> list[str]:
         """Group names currently in use, alphabetically. Never includes ""."""
         with db.connect(self.db_path) as conn:
             return db.list_group_names(conn)
+
+    def list_identifiers(self) -> list[str]:
+        """Login identifiers already in use, most-reused first (autocomplete)."""
+        with db.connect(self.db_path) as conn:
+            return db.list_identifiers(conn)
 
     def set_group(self, cred_id: int, group_name: str) -> str:
         """Move one credential into a group ("" removes it from any group).
@@ -558,6 +573,7 @@ class Vault:
             # Defensive: a row read through a connection opened before the
             # migration ran has no such column.
             "group_name": (row["group_name"] if "group_name" in row.keys() else ""),
+            "alt_login": (row["alt_login"] if "alt_login" in row.keys() else ""),
             "mfa_enabled": bool(row["mfa_enabled"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

@@ -21,27 +21,47 @@ from .util import initials
 
 
 class _GroupHeader(QWidget):
-    """A non-selectable divider naming a group and how many items it holds."""
+    """A clickable divider naming a group, its size, and its collapsed state.
 
-    def __init__(self, label: str, count: int):
+    The list item itself stays non-selectable, so this widget owns the click.
+    """
+
+    toggled = Signal()
+
+    def __init__(self, label: str, count: int, collapsed: bool = False):
         super().__init__()
         p = theme.active()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Expand group" if collapsed else "Collapse group")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 2)
-        lay.setSpacing(8)
-        name = QLabel(label.upper())
-        name.setStyleSheet(
+        lay.setContentsMargins(10, 8, 14, 2)
+        lay.setSpacing(6)
+
+        self.arrow = QLabel()
+        self.arrow.setPixmap(icons.pixmap(
+            "chevron-right" if collapsed else "chevron-down", p.text_faint, 14))
+        lay.addWidget(self.arrow)
+
+        # Named attributes, not layout positions: callers and tests should not
+        # have to know the arrow is child 0.
+        self.name_label = QLabel(label.upper())
+        self.name_label.setStyleSheet(
             f"color:{p.text_faint}; font-size:11px; font-weight:800;"
             f" letter-spacing:0.8px;"
         )
-        lay.addWidget(name)
-        tally = QLabel(str(count))
-        tally.setStyleSheet(
+        lay.addWidget(self.name_label)
+        self.count_label = QLabel(str(count))
+        self.count_label.setStyleSheet(
             f"color:{p.text_faint}; font-size:11px; font-weight:700;"
             f" background:{p.surface_alt}; border-radius:7px; padding:1px 7px;"
         )
-        lay.addWidget(tally)
+        lay.addWidget(self.count_label)
         lay.addStretch(1)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.toggled.emit()
+        super().mouseReleaseEvent(event)
 
 
 class _ItemRow(QWidget):
@@ -75,6 +95,8 @@ class VaultView(QWidget):
         self._vault: vault.Vault | None = None
         self._creds: list[dict] = []
         self._selected_id: int | None = None
+        # Casefolded labels of groups the user has collapsed this session.
+        self._collapsed: set[str] = set()
         p = theme.active()
 
         root = QHBoxLayout(self)
@@ -196,11 +218,16 @@ class VaultView(QWidget):
             cred for cred in self._creds
             if not term or term in (
                 cred["service_name"] + " " + cred["username"] + " "
-                + (cred.get("group_name") or "")
+                + (cred.get("group_name") or "") + " "
+                + (cred.get("alt_login") or "")
             ).lower()
         ]
 
         for label, members in groups.group_credentials(matching):
+            # While searching, show every match: a hit hidden inside a
+            # collapsed group reads as "no results".
+            collapsed = bool(not term and label.casefold() in self._collapsed)
+
             # A header is a decoration, never a selection target — leaving it
             # selectable would let arrow-key navigation land on a non-item.
             header = QListWidgetItem()
@@ -208,7 +235,12 @@ class VaultView(QWidget):
             header.setData(Qt.UserRole, None)
             header.setSizeHint(QSize(0, 30))
             self.list.addItem(header)
-            self.list.setItemWidget(header, _GroupHeader(label, len(members)))
+            widget = _GroupHeader(label, len(members), collapsed)
+            widget.toggled.connect(lambda name=label: self._toggle_group(name))
+            self.list.setItemWidget(header, widget)
+
+            if collapsed:
+                continue
 
             for cred in members:
                 item = QListWidgetItem()
@@ -219,6 +251,15 @@ class VaultView(QWidget):
                 if cred["id"] == self._selected_id:
                     self.list.setCurrentItem(item)
         self.list.blockSignals(False)
+
+    def _toggle_group(self, label: str) -> None:
+        """Collapse or expand one group. Session-scoped, not persisted."""
+        key = label.casefold()
+        if key in self._collapsed:
+            self._collapsed.discard(key)
+        else:
+            self._collapsed.add(key)
+        self._rebuild_list()
 
     def _apply_filter(self) -> None:
         self._rebuild_list()

@@ -44,6 +44,7 @@ _PATHS: dict[str, str] = {
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     "chevron-left": '<path d="m15 18-6-6 6-6"/>',
+    "chevron-down": '<path d="m6 9 6 6 6-6"/>',
     "arrow-left": '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
     "external": '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/>',
     "grid": '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',

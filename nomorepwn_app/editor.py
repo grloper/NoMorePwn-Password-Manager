@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QStringListModel, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea, QVBoxLayout,
-    QWidget,
+    QComboBox, QCompleter, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 from nomorepwn import groups, strength, validation, vault
@@ -59,11 +59,43 @@ class CredentialEditor(QWidget):
         form.addWidget(self.service)
         form.addSpacing(8)
 
-        form.addWidget(components.field_label("Username / email"))
+        user_label_row = QHBoxLayout()
+        user_label_row.addWidget(components.field_label("Username / email"))
+        user_label_row.addStretch(1)
+        self.alt_toggle = components.button("Add alternate login", None, "LinkButton")
+        user_label_row.addWidget(self.alt_toggle)
+        form.addLayout(user_label_row)
+
         self.username = QLineEdit()
         self.username.setPlaceholderText("e.g. alice@example.com")
         self.username.setMaxLength(validation.MAX_USERNAME_LEN)
+        # Suggest identifiers already in the vault — most people reuse a
+        # handful of addresses across dozens of sites.
+        self._identifier_model = QStringListModel([])
+        completer = QCompleter(self._identifier_model, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.username.setCompleter(completer)
         form.addWidget(self.username)
+
+        # Hidden until asked for: most credentials have one identifier, and an
+        # always-visible second box makes people wonder which one to fill in.
+        self.alt_row = QWidget()
+        alt_lay = QVBoxLayout(self.alt_row)
+        alt_lay.setContentsMargins(0, 8, 0, 0)
+        alt_lay.setSpacing(4)
+        alt_lay.addWidget(components.field_label("Alternate login (optional)"))
+        self.alt_login = QLineEdit()
+        self.alt_login.setPlaceholderText("The other way you sign in — e.g. a username, or an email")
+        self.alt_login.setMaxLength(validation.MAX_USERNAME_LEN)
+        alt_completer = QCompleter(self._identifier_model, self)
+        alt_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        alt_completer.setFilterMode(Qt.MatchContains)
+        self.alt_login.setCompleter(alt_completer)
+        alt_lay.addWidget(self.alt_login)
+        self.alt_row.setVisible(False)
+        form.addWidget(self.alt_row)
         form.addSpacing(8)
 
         form.addWidget(components.field_label("Group (optional)"))
@@ -138,6 +170,7 @@ class CredentialEditor(QWidget):
         self.password.textChanged.connect(self._update_strength)
         # Suggest a group once they stop typing the service, not per keystroke.
         self.service.editingFinished.connect(self._suggest_group_for_service)
+        self.alt_toggle.clicked.connect(self._toggle_alt_login)
         self.gen_toggle.clicked.connect(self._toggle_generator)
         self.generator.use_requested.connect(self._use_generated)
         self.copy_pw.clicked.connect(lambda: self._ctx.copy_secret(self.password.text(), "Password copied"))
@@ -145,6 +178,29 @@ class CredentialEditor(QWidget):
         self.save_btn.clicked.connect(self._save)
 
     # ------------------------------------------------------------------
+
+    def _refresh_identifiers(self) -> None:
+        """Reload the autocomplete list from the vault."""
+        vlt = self._get_vault()
+        try:
+            self._identifier_model.setStringList(vlt.list_identifiers() if vlt else [])
+        except Exception:  # noqa: BLE001 - autocomplete must never block editing
+            self._identifier_model.setStringList([])
+
+    def _show_alt_login(self, show: bool) -> None:
+        self.alt_row.setVisible(show)
+        self.alt_toggle.setText("Remove alternate login" if show else "Add alternate login")
+        if show:
+            self.alt_login.setFocus()
+
+    def _toggle_alt_login(self) -> None:
+        # isHidden(), not isVisible(): the latter is False whenever an ancestor
+        # is off-screen, which would flip this branch the wrong way.
+        if not self.alt_row.isHidden():
+            self.alt_login.clear()      # hiding it clears it; save writes ""
+            self._show_alt_login(False)
+        else:
+            self._show_alt_login(True)
 
     def _refresh_group_choices(self, selected: str = "") -> None:
         """Repopulate the dropdown: known groups first, then the user's own."""
@@ -182,9 +238,12 @@ class CredentialEditor(QWidget):
         self.notes.clear()
         self.mfa.setChecked(False)
         self.gen_box.setVisible(False)
+        self.alt_login.clear()
+        self._show_alt_login(False)
+        self._refresh_identifiers()
         self._refresh_group_choices("")
         self._original = {"service": "", "username": "", "password": "", "notes": "",
-                          "mfa": False, "group": ""}
+                          "mfa": False, "group": "", "alt": ""}
         self.service.setFocus()
 
     def load_edit(self, cred: dict) -> None:
@@ -204,11 +263,16 @@ class CredentialEditor(QWidget):
         self.mfa.setChecked(bool(cred["mfa_enabled"]))
         self.gen_box.setVisible(False)
         current_group = cred.get("group_name", "")
+        current_alt = cred.get("alt_login", "")
+        self.alt_login.setText(current_alt)
+        # Shown only when the item actually has one.
+        self._show_alt_login(bool(current_alt))
+        self._refresh_identifiers()
         self._refresh_group_choices(current_group)
         self._original = {
             "service": cred["service_name"], "username": cred["username"],
             "password": current_pw, "notes": current_notes, "mfa": bool(cred["mfa_enabled"]),
-            "group": current_group,
+            "group": current_group, "alt": current_alt,
         }
         self.service.setFocus()
 
@@ -220,6 +284,7 @@ class CredentialEditor(QWidget):
             or self.notes.toPlainText() != self._original.get("notes", "")
             or self.mfa.isChecked() != self._original.get("mfa", False)
             or self.group.currentText().strip() != self._original.get("group", "")
+            or self.alt_login.text().strip() != self._original.get("alt", "")
         )
 
     # ------------------------------------------------------------------
@@ -249,6 +314,7 @@ class CredentialEditor(QWidget):
         service = self.service.text().strip()
         username = self.username.text().strip()
         group_name = self.group.currentText().strip()
+        alt_login = self.alt_login.text().strip()
         password = self.password.text()
         notes = self.notes.toPlainText()
         mfa = self.mfa.isChecked()
@@ -274,10 +340,10 @@ class CredentialEditor(QWidget):
                     self._ctx.toast.show("Enter or generate a password first.", "error")
                     return
                 vlt.add_credential(service, username, password, notes, mfa,
-                                   group_name=group_name)
+                                   group_name=group_name, alt_login=alt_login)
             else:
                 vlt.update_credential(self._cred_id, service, username, notes, mfa,
-                                      group_name=group_name)
+                                      group_name=group_name, alt_login=alt_login)
                 if password != self._original.get("password", ""):
                     if not password:
                         self._ctx.toast.show("Password cannot be empty.", "error")

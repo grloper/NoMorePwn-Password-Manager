@@ -32,14 +32,12 @@ class GeneratorView(QWidget):
             "Every password is created with a cryptographically secure random "
             "generator — right here on your device."))
 
-        card = Card(padding=22)
-        card.setMaximumWidth(560)
+        card = Card(padding=24)
+        card.setMinimumWidth(560)
+        card.setMaximumWidth(760)
         self.panel = GeneratorPanel(show_use_button=False)
         card.add(self.panel)
-        wrap = QHBoxLayout()
-        wrap.addWidget(card)
-        wrap.addStretch(1)
-        lay.addLayout(wrap)
+        lay.addWidget(card)
         lay.addStretch(1)
 
         self.panel.copy_btn.clicked.connect(

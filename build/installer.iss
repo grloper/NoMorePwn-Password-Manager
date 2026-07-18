@@ -30,9 +30,11 @@ DefaultDirName={autopf}\NoMorePwn
 DefaultGroupName=NoMorePwn
 DisableProgramGroupPage=yes
 DisableDirPage=auto
-OutputDir=dist
+; NOTE: relative paths here resolve against THIS FILE's directory (build\),
+; so everything pointing at the repo root needs a leading "..\".
+OutputDir=..\dist
 OutputBaseFilename=NoMorePwn-Setup
-SetupIconFile=assets\NoMorePwn.ico
+SetupIconFile=..\assets\NoMorePwn.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 Compression=lzma2
@@ -49,7 +51,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "startupicon"; Description: "Start NoMorePwn at sign-in (locked, in the tray)"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
-Source: "dist\NoMorePwn.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\NoMorePwn.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\NoMorePwn"; Filename: "{app}\{#MyAppExeName}"

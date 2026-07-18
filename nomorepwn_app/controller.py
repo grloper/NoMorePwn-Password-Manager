@@ -47,8 +47,9 @@ class AppController(QObject):
         self._quitting = False
         self._tray_hint_shown = False
 
-        # Theme
+        # Theme (palette first — it covers widgets the stylesheet can't reach)
         theme.set_active(theme.get_palette(self.settings.theme))
+        app.setPalette(theme.build_palette(theme.active()))
         app.setStyleSheet(theme.build_stylesheet(theme.active()))
 
         # Core objects
@@ -216,14 +217,31 @@ class AppController(QObject):
         startup.set_launch_at_startup(self.settings.launch_at_startup)
         self._reset_autolock()
         if self.settings.theme != self._theme_name:
-            self._theme_name = self.settings.theme
-            theme.set_active(theme.get_palette(self.settings.theme))
-            self.app.setStyleSheet(theme.build_stylesheet(theme.active()))
-            # Rebuild the shell so inline-styled widgets re-colour, then
-            # return the user to the Settings page they were on.
-            if self.vault is not None:
-                self.window.show_shell(self.vault)
-                self.window._shell.goto_page(3)
+            self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """Switch palettes without leaving stale colours behind.
+
+        Many widgets bake palette colours into inline stylesheets when
+        they're built, so a stylesheet swap alone leaves light surfaces
+        stranded in dark mode. We clear and reapply the global sheet (to
+        force a full re-polish) and rebuild every cached screen.
+        """
+        self._theme_name = self.settings.theme
+        theme.set_active(theme.get_palette(self.settings.theme))
+        self.app.setPalette(theme.build_palette(theme.active()))
+        self.app.setStyleSheet("")  # force Qt to drop the old sheet entirely
+        self.app.setStyleSheet(theme.build_stylesheet(theme.active()))
+
+        self.window.reset_cached_views()
+        if self.vault is not None:
+            # Rebuild the unlocked shell and return to the Settings page.
+            self.window.show_shell(self.vault)
+            self.window._shell.goto_page(3)
+        elif vault.vault_exists(self.db_path):
+            self.window.show_unlock()
+        else:
+            self.window.show_create()
 
     # ------------------------------------------------------------------
 

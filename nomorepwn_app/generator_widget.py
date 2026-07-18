@@ -71,15 +71,18 @@ class GeneratorPanel(QWidget):
         out_row.setSpacing(8)
         self.output = QLineEdit()
         self.output.setReadOnly(True)
+        self.output.setMinimumHeight(56)
         self.output.setObjectName("Mono")
         self.output.setStyleSheet(
             f"QLineEdit {{ font-family:'Cascadia Code','Consolas',monospace;"
-            f" font-size:17px; padding:14px 14px; background:{p.field};"
-            f" border:1px solid {p.border_strong}; border-radius:12px; }}"
+            f" font-size:18px; padding:8px 14px; background:{p.field};"
+            f" border:1px solid {p.border_strong}; border-radius:12px; color:{p.text}; }}"
         )
         out_row.addWidget(self.output, 1)
-        self.copy_btn = components.icon_button("copy", "Copy", 18)
-        self.regen_btn = components.icon_button("refresh", "Regenerate", 18)
+        self.copy_btn = components.icon_button("copy", "Copy", 20)
+        self.copy_btn.setFixedSize(44, 44)
+        self.regen_btn = components.icon_button("refresh", "Regenerate", 20)
+        self.regen_btn.setFixedSize(44, 44)
         out_row.addWidget(self.copy_btn)
         out_row.addWidget(self.regen_btn)
         root.addLayout(out_row)
@@ -216,6 +219,7 @@ class GeneratorPanel(QWidget):
                 add_number=self.cb_num.isChecked(),
             )
         self.output.setText(secret)
+        self.output.setCursorPosition(0)  # show the start, not the tail, for long values
         result = strength.evaluate(secret)
         self.meter.set_result(result.score, f"{result.label} · cracks in {result.crack_time_display}")
         self.generated.emit(secret)

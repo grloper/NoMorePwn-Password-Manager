@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PySide6.QtGui import QColor, QPalette
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -115,6 +117,34 @@ def set_active(palette: Palette) -> None:
 
 def active() -> Palette:
     return _ACTIVE
+
+
+def build_palette(p: Palette) -> QPalette:
+    """A real QPalette for the theme.
+
+    The stylesheet only reaches widgets its selectors match; anything
+    unstyled (scroll-area content widgets, plain page containers) would
+    otherwise fall back to Qt's default *light* palette — which is how
+    white panels leak into the dark theme. Setting the palette makes the
+    whole app dark/light at the source.
+    """
+    qp = QPalette()
+    qp.setColor(QPalette.Window, QColor(p.window))
+    qp.setColor(QPalette.WindowText, QColor(p.text))
+    qp.setColor(QPalette.Base, QColor(p.field))
+    qp.setColor(QPalette.AlternateBase, QColor(p.surface_alt))
+    qp.setColor(QPalette.Text, QColor(p.text))
+    qp.setColor(QPalette.Button, QColor(p.surface_alt))
+    qp.setColor(QPalette.ButtonText, QColor(p.text))
+    qp.setColor(QPalette.ToolTipBase, QColor(p.surface_alt))
+    qp.setColor(QPalette.ToolTipText, QColor(p.text))
+    qp.setColor(QPalette.Highlight, QColor(p.primary))
+    qp.setColor(QPalette.HighlightedText, QColor(p.on_primary))
+    qp.setColor(QPalette.PlaceholderText, QColor(p.text_faint))
+    qp.setColor(QPalette.Link, QColor(p.primary))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        qp.setColor(QPalette.Disabled, role, QColor(p.text_faint))
+    return qp
 
 
 def build_stylesheet(p: Palette) -> str:
@@ -291,6 +321,11 @@ QCheckBox::indicator:checked {{
     background: {p.primary}; border-color: {p.primary};
     image: url(:/check);
 }}
+
+/* ---- Scroll areas: let the themed parent show through ---- */
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QAbstractScrollArea::viewport {{ background: transparent; }}
 
 /* ---- Scrollbars ---- */
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 4px; }}

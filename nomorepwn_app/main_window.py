@@ -79,6 +79,20 @@ class MainWindow(QMainWindow):
             self._shell.deleteLater()
             self._shell = None
 
+    def reset_cached_views(self) -> None:
+        """Discard the cached create/unlock screens.
+
+        Those widgets bake palette colours into inline stylesheets at
+        construction, so after a theme change they must be rebuilt rather
+        than reused — otherwise light-theme surfaces linger in dark mode.
+        """
+        for attr in ("_create", "_unlock"):
+            view = getattr(self, attr)
+            if view is not None:
+                self.stack.removeWidget(view)
+                view.deleteLater()
+                setattr(self, attr, None)
+
     def has_unsaved(self) -> bool:
         return self._shell is not None and self._shell.has_unsaved()
 

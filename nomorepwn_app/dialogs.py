@@ -67,6 +67,7 @@ class _OptionCard(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self._accent = accent
         self._checked = False
+        self._hover = False
         p = theme.active()
 
         lay = QHBoxLayout(self)
@@ -91,8 +92,9 @@ class _OptionCard(QFrame):
 
     def _refresh(self) -> None:
         p = theme.active()
-        border = self._accent if self._checked else p.border
-        bg = p.primary_soft if self._checked else p.surface
+        active = self._checked or self._hover
+        border = self._accent if active else p.border_strong
+        bg = p.primary_soft if active else p.surface
         self.setStyleSheet(
             f"QFrame#OptCard {{ background:{bg}; border:1.5px solid {border}; border-radius:14px; }}"
         )
@@ -104,6 +106,16 @@ class _OptionCard(QFrame):
     def isChecked(self) -> bool:
         return self._checked
 
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        self._refresh()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        self._refresh()
+        super().leaveEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
@@ -111,13 +123,16 @@ class _OptionCard(QFrame):
 
 
 class CloseChoiceDialog(QDialog):
-    """The X-button prompt: keep running in tray, or quit — both lock first."""
+    """The X-button prompt. Each option is a *direct action*: one click
+    performs it — no separate confirm step — so there's no way to press
+    the X and end up unsure whether the app closed. Both options lock the
+    vault first."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Close NoMorePwn")
         self.setModal(True)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(470)
         self.choice: str | None = None
         p = theme.active()
 
@@ -125,15 +140,15 @@ class CloseChoiceDialog(QDialog):
         lay.setContentsMargins(26, 24, 26, 22)
         lay.setSpacing(14)
 
-        lay.addWidget(components.heading("Before you go", "H2"))
-        sub = QLabel("Your vault will be locked either way. What should NoMorePwn do next?")
+        lay.addWidget(components.heading("Close NoMorePwn", "H2"))
+        sub = QLabel("Your vault will be locked first. Pick what happens to the app:")
         sub.setObjectName("Muted")
         sub.setWordWrap(True)
         lay.addWidget(sub)
 
         self.tray_card = _OptionCard(
             "shield-check", "Keep running in the tray",
-            "Locks the vault and keeps NoMorePwn in the system tray (bottom-right) for instant access.",
+            "Locks the vault and keeps NoMorePwn in the system tray (bottom-right ⌃) for instant access.",
             p.primary,
         )
         self.quit_card = _OptionCard(
@@ -141,9 +156,8 @@ class CloseChoiceDialog(QDialog):
             "Locks the vault and shuts NoMorePwn down entirely.",
             p.danger,
         )
-        self.tray_card.setChecked(True)
-        self.tray_card.clicked.connect(lambda: self._select(self.tray_card))
-        self.quit_card.clicked.connect(lambda: self._select(self.quit_card))
+        self.tray_card.clicked.connect(lambda: self._choose(CLOSE_TRAY))
+        self.quit_card.clicked.connect(lambda: self._choose(CLOSE_QUIT))
         lay.addWidget(self.tray_card)
         lay.addWidget(self.quit_card)
 
@@ -152,21 +166,14 @@ class CloseChoiceDialog(QDialog):
         lay.addWidget(self.remember)
 
         btns = QHBoxLayout()
+        btns.addStretch(1)
         cancel = components.button("Cancel", object_name="Ghost")
         cancel.clicked.connect(self.reject)
         btns.addWidget(cancel)
-        btns.addStretch(1)
-        cont = components.primary_button("Continue", "check")
-        cont.clicked.connect(self._accept)
-        btns.addWidget(cont)
         lay.addLayout(btns)
 
-    def _select(self, card: _OptionCard) -> None:
-        self.tray_card.setChecked(card is self.tray_card)
-        self.quit_card.setChecked(card is self.quit_card)
-
-    def _accept(self) -> None:
-        self.choice = CLOSE_QUIT if self.quit_card.isChecked() else CLOSE_TRAY
+    def _choose(self, action: str) -> None:
+        self.choice = action
         self.accept()
 
     def remembered(self) -> bool:

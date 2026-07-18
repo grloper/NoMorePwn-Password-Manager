@@ -4,14 +4,6 @@
   "version": "0.1.0",
   "description": "Captures credentials only after a login is verified to have succeeded.",
 
-  "//key": [
-    "Pins the extension ID to cjgphedkabfdfbhkfleagmanmmhlolkl on every machine.",
-    "Without this, an unpacked extension's ID is derived from its install path,",
-    "so it differs per user — and the native-messaging host manifest has to name",
-    "that exact ID in allowed_origins. Pinning is what lets the desktop app",
-    "register the bridge without asking you to copy an ID by hand.",
-    "This is the PUBLIC key; the private half is only needed to pack a .crx."
-  ],
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnejo0ZtZkfyxTc9uY8CCHw9STzHTpCAmT+RLSgGAMCCzXXcfmCvuMsB/P+yVZq7yuLaR8v/+77buBz3JeDIcStzUSlEFal+PydxC3VsSM5LyZaYDW2oaKqAalZnbY4Tzn+gNPMRp3RfOu0EuNr/C+B2iVjBAvc3ClbPRwQ5a/eznV6iw4LVHPXSZTa2UNCwIWWOjPC39NXhPS35PILWSewWvqHZpP6BRWul8MtjuLPo8lDMyAhm7spsx/aWvZQv3YvEN7eXIeFhXFwpaXlaSbWeE0Sp3jfX6AAnwDytQbebvOsUsJgr/d8EX1CkdEF+NTQukB1czFPKX+tuDnUsJ0QIDAQAB",
 
   "background": {

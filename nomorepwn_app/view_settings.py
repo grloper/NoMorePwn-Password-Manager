@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 
-from . import __version__, browser_bridge, components, theme
+from . import __version__, browser_bridge, components, is_packaged_build, theme
 from .components import Card
 from .context import AppContext
 from .dialogs import ask_new_passphrase, confirm
@@ -165,6 +165,36 @@ class SettingsView(QWidget):
         backup_card.body.addLayout(actions)
         lay.addWidget(backup_card)
 
+        # -- Updates ---------------------------------------------------
+        upd_card = Card()
+        upd_card.add(components.heading("Updates", "H3"))
+        upd_card.add(components.muted(
+            "NoMorePwn checks GitHub for new stable releases, downloads them in "
+            "the background, and verifies the download before asking you to "
+            "install. It never installs on its own, and your vault is locked "
+            "first. Your vault and backups are untouched by an update."))
+
+        self.updates_enabled = QCheckBox()
+        upd_card.add(_Setting("Check for updates automatically",
+                              "On launch and once a day while running.",
+                              self.updates_enabled))
+
+        self.update_status = QLabel("")
+        self.update_status.setWordWrap(True)
+        upd_card.add(self.update_status)
+
+        upd_actions = QHBoxLayout()
+        self.update_check_btn = components.button("Check now", "refresh")
+        self.update_check_btn.clicked.connect(self._check_updates)
+        self.update_install_btn = components.button("Restart & update", "download")
+        self.update_install_btn.clicked.connect(self._install_update)
+        self.update_install_btn.setVisible(False)
+        upd_actions.addWidget(self.update_check_btn)
+        upd_actions.addWidget(self.update_install_btn)
+        upd_actions.addStretch(1)
+        upd_card.body.addLayout(upd_actions)
+        lay.addWidget(upd_card)
+
         # -- Browser extension -----------------------------------------
         ext_card = Card()
         ext_card.add(components.heading("Browser extension", "H3"))
@@ -241,6 +271,7 @@ class SettingsView(QWidget):
         self.theme_sel.currentIndexChanged.connect(self._save)
         self.backup_enabled.toggled.connect(self._save)
         self.backup_keep.currentIndexChanged.connect(self._save)
+        self.updates_enabled.toggled.connect(self._save)
 
     def _load(self) -> None:
         self._loading = True
@@ -255,9 +286,11 @@ class SettingsView(QWidget):
         self.theme_sel.setCurrentIndex(max(0, self.theme_sel.findData(s.theme)))
         self.backup_enabled.setChecked(s.backup_enabled)
         self.backup_keep.setCurrentIndex(max(0, self.backup_keep.findData(s.backup_keep)))
+        self.updates_enabled.setChecked(s.updates_enabled)
         self._loading = False
         self._refresh_backup_info()
         self._refresh_extension_info()
+        self._refresh_update_info()
 
     # -- backups --------------------------------------------------------
 
@@ -339,6 +372,59 @@ class SettingsView(QWidget):
         self._ctx.toast.show("Backup passphrase set", "success")
         self._refresh_backup_info()
         self._ctx.backup_now()
+
+    # -- updates ----------------------------------------------------------
+
+    def _update_manager(self):
+        return getattr(self._ctx, "updates", None)
+
+    def _refresh_update_info(self, message: str = "", kind: str = "") -> None:
+        p = theme.active()
+        colour = {"error": p.danger, "success": p.success}.get(kind, p.text_muted)
+        weight = "600" if kind else "400"
+
+        mgr = self._update_manager()
+        ready = mgr.ready if mgr else None
+        self.update_install_btn.setVisible(bool(ready))
+
+        if message:
+            text = message
+        elif ready:
+            text = f"Version {ready[0].version} is downloaded and verified."
+            colour, weight = p.success, "600"
+        elif not is_packaged_build():
+            text = (f"Running {__version__} from source — updates apply to "
+                    "installed copies only.")
+            self.update_check_btn.setEnabled(False)
+        else:
+            when = self._settings.update_last_check
+            text = f"You're on {__version__}."
+            if when:
+                text += f" Last checked {when.replace('T', ' ')[:16]}."
+
+        self.update_status.setText(text)
+        self.update_status.setStyleSheet(f"color:{colour}; font-weight:{weight};")
+
+    def _check_updates(self) -> None:
+        mgr = self._update_manager()
+        if mgr is None:
+            self._refresh_update_info("Update checks are unavailable.", "error")
+            return
+        self._refresh_update_info("Checking…")
+        mgr.check(user_initiated=True)
+
+    def _install_update(self) -> None:
+        mgr = self._update_manager()
+        if mgr is None or not mgr.ready:
+            return
+        release, installer = mgr.ready
+        if not confirm(
+                self, f"Update to {release.version}?",
+                "NoMorePwn will lock your vault, close, and install the update. "
+                "Your vault and backups are not affected.",
+                confirm_text="Restart & update"):
+            return
+        self._ctx.apply_update(installer)
 
     # -- browser extension ----------------------------------------------
 
@@ -425,5 +511,6 @@ class SettingsView(QWidget):
         s.theme = self.theme_sel.currentData()
         s.backup_enabled = self.backup_enabled.isChecked()
         s.backup_keep = self.backup_keep.currentData()
+        s.updates_enabled = self.updates_enabled.isChecked()
         s.save()
         self._on_change()

@@ -8,8 +8,10 @@ login succeeded, bridged by a native-messaging host.
 anyone who obtains a backup from cloud storage. Out of scope: memory dumps of the live process,
 malware running as the user, multi-user concurrency.
 
-The master key exists only in RAM on a live `Vault`. Only `nomorepwn/leakcheck.py` touches the
-network.
+The master key exists only in RAM on a live `Vault`. Exactly two modules touch the network:
+`nomorepwn/leakcheck.py` (HIBP, 5 hex chars out) and `nomorepwn/updater.py` (GitHub Releases +
+installer download). Adding a third is a threat-model change — update `README.md` and
+`docs/ARCHITECTURE.md` §1 in the same commit, both of which enumerate them.
 
 ---
 
@@ -154,6 +156,26 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
 - `db.snapshot_bytes` writes a full **unencrypted** vault copy to the system temp dir on every
   backup (4s debounce after any edit).
 
+**Builds, updates, and running the packaged app**
+- **A running instance silently swallows new launches.** `app.py:48` `_already_running_then_show()`
+  connects to a per-user `QLocalServer`, tells the existing instance to show itself, and returns 0.
+  Launching a freshly built .exe while any NoMorePwn is running exits immediately with **no error
+  and no output** — it looks exactly like a crash. Check `Get-Process NoMorePwn` before concluding
+  a build is broken.
+- **The version is baked at build time** into `nomorepwn_app/_build_info.py` by the spec, and that
+  file is gitignored. Never reintroduce `os.environ.get("NOMOREPWN_VERSION")` at module scope: it
+  evaluates on the *user's* machine where the variable is unset, which is why every release
+  reported `1.0.0`. A source checkout reports `0.0.0-dev`, which `updater.parse_version` refuses
+  outright so a checkout is never offered an installer.
+- **Every push to main publishes a PRE-RELEASE.** `/releases/latest` skips those, so users only
+  move when you promote a release. Drop `prerelease: true` from `release.yml` and every push
+  auto-updates every install — with tests running *after* merge.
+- **Lock the vault before launching the installer** (`controller.apply_update`). It replaces the
+  running .exe and restarts it. Guarded by `tests/test_views.py::UpdateApplyOrderingTests`.
+- The installer's SHA-256 ships in the same release, so it catches corruption and a swapped asset —
+  **not** a compromised account, which could publish a matching checksum. Do not describe updates
+  as tamper-proof. Builds are unsigned; SmartScreen will warn.
+
 **App / UI**
 - `run_async(fn, on_done, on_error, *args)` — positional args come *after* the callbacks. Bind with
   a lambda or `partial`; never use the `*args` tail.
@@ -199,8 +221,12 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   scripts and cannot import) and has **zero** test coverage. Renaming a type in
   `shared/messages.js` leaves all 52 checks green and the capture path dead.
 - The `content_scripts` `js` array is load-ordered: `spa-observer.js` must stay first.
-- Released `.exe` builds don't ship `extension/` at all (onefile spec) — yet `register()` succeeds
-  and `status().is_registered` returns True.
+- The extension is bundled **into** the .exe and materialised to
+  `%APPDATA%\NoMorePwn\extension` at startup, version-stamped in `.version`. It is not beside the
+  .exe (onefile has no such folder) and not `_MEIPASS` (a temp dir that changes every launch, which
+  would break the loaded extension on restart). `build/NoMorePwn.spec` **allowlists** what ships —
+  `manifest.json` plus `.js/.json/.css/.html` under `src/` — so `extension/.keys/` is unreachable
+  by construction rather than by an exclude list someone has to maintain.
 
 ## How to verify a change here
 

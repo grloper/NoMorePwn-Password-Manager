@@ -161,6 +161,78 @@ class SettingsExtensionSectionTests(unittest.TestCase):
         # user is told to select a path that does not exist.
         self.assertIn(str(browser_bridge.extension_dir()), view.ext_steps.text())
 
+    def test_update_section_reports_the_running_version(self):
+        from nomorepwn_app import __version__
+        from nomorepwn_app.view_settings import SettingsView
+
+        view = SettingsView(self.ctx, on_change=lambda: None)
+        self.assertIn(__version__, view.update_status.text())
+        # Nothing is downloaded, so there must be no install affordance.
+        self.assertFalse(view.update_install_btn.isVisible())
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class UpdateApplyOrderingTests(unittest.TestCase):
+    """The vault must be locked BEFORE the installer process starts.
+
+    The installer replaces the running .exe and restarts it. If the key is
+    still in memory when it runs, the master key is live across a process
+    teardown that is concurrently rewriting the binary.
+    """
+
+    def test_lock_runs_before_the_installer_launches(self):
+        from nomorepwn_app.update_manager import UpdateManager
+        from nomorepwn.settings import Settings
+
+        events: list[str] = []
+        mgr = UpdateManager(Settings())
+
+        tmp = Path(tempfile.mkdtemp()) / "NoMorePwn-Setup.exe"
+        tmp.write_bytes(b"not a real installer")
+
+        import subprocess as sp
+
+        real_popen = sp.Popen
+
+        def fake_popen(*a, **kw):
+            events.append("installer-launched")
+
+            class _P:
+                pid = 1234
+            return _P()
+
+        sp.Popen = fake_popen
+        try:
+            started = mgr.apply(tmp, lambda: events.append("vault-locked"))
+        finally:
+            sp.Popen = real_popen
+
+        self.assertTrue(started)
+        self.assertEqual(events, ["vault-locked", "installer-launched"],
+                         "the vault must be locked before the installer runs")
+
+    def test_missing_installer_is_refused_without_locking(self):
+        from nomorepwn_app.update_manager import UpdateManager
+        from nomorepwn.settings import Settings
+
+        events: list[str] = []
+        mgr = UpdateManager(Settings())
+        missing = Path(tempfile.mkdtemp()) / "nope.exe"
+        self.assertFalse(mgr.apply(missing, lambda: events.append("locked")))
+        self.assertEqual(events, [])
+
+    def test_dev_build_never_starts_periodic_checks(self):
+        """A source checkout has no installer to replace."""
+        from nomorepwn_app.update_manager import UpdateManager
+        from nomorepwn.settings import Settings
+
+        mgr = UpdateManager(Settings())
+        mgr.start()
+        self.assertFalse(mgr._timer.isActive())
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class ExtensionIdTests(unittest.TestCase):
     def test_pinned_extension_id_matches_the_committed_manifest_key(self):
         """A mismatch reports "Connected" while refusing every connection."""
         import base64

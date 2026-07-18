@@ -39,6 +39,13 @@ class Settings:
     backup_last_at: str = ""      # ISO timestamp of the last successful run
     backup_last_error: str = ""   # last failure, surfaced in Settings
 
+    # -- Automatic updates ----------------------------------------------
+    # Checks GitHub Releases, downloads in the background, then asks before
+    # installing. Never applies an update without the user clicking.
+    updates_enabled: bool = True
+    update_last_check: str = ""    # ISO timestamp of the last completed check
+    update_skipped_version: str = ""  # a version the user chose to skip
+
     # -- persistence ----------------------------------------------------
 
     @classmethod

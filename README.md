@@ -122,7 +122,8 @@ Every change refreshes a sealed `.nmpbak` copy (5 generations kept), flushed bef
 - Your master password is the **only** key. **There is no recovery.**
 - The vault file is safe to *lose*, not safe to *hand out*: secrets are unbreakable without your passphrase, but service names and usernames are visible metadata.
 - No software protects an unlocked vault from malware already running as you. Lock when you step away — NoMorePwn does it for you.
-- The **only** outbound request in the entire codebase is the opt-in HIBP range query. Everything else is provably offline.
+- There are exactly **two** outbound requests in the codebase, both listed here: the opt-in HIBP range query (5 hex characters of a SHA-1), and the update check against the GitHub Releases API. Nothing else touches the network, and no vault data is involved in either.
+- **Updates are verified but not code-signed.** The app downloads a release installer over HTTPS and checks its SHA-256 before asking you to install it. That catches corruption and a swapped asset — it does *not* protect against a compromised GitHub account, since whoever can publish a release can publish a matching checksum. Turn updates off in **Settings → Updates** if you'd rather install manually.
 
 Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, key lifecycle, tamper evidence, and the three-ring SQL-injection defense.
 

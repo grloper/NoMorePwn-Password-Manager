@@ -13,9 +13,21 @@ one native desktop app, zero required network access.
    ciphertext container. Even with full read access to `vault.db`, an
    attacker learns service names and usernames at most — never
    passwords or notes. Write access is *detected* (tamper evidence).
-3. **One narrow network path.** The only outbound call in the codebase
-   is `nomorepwn/leakcheck.py`, and it transmits exactly 5 hex
-   characters. Everything else is import-time provably offline.
+3. **Two narrow network paths, both enumerated.**
+   - `nomorepwn/leakcheck.py` — HIBP range query, transmits exactly 5 hex
+     characters of a SHA-1. Opt-in, per action.
+   - `nomorepwn/updater.py` — reads the GitHub Releases API and downloads a
+     release installer. Transmits nothing about the user or the vault.
+     Toggleable in Settings.
+
+   Everything else is import-time provably offline. The updater is the
+   larger of the two surfaces: it fetches an executable and hands it to the
+   OS. See §10 for what its integrity check does and does not guarantee.
+
+   The browser extension under `extension/` is a separate component with its
+   own network posture — it observes response headers on sites the user
+   visits and never transmits vault data. It reaches this app only through a
+   local native-messaging pipe, never a socket.
 
 ## 2. Component map
 
@@ -239,3 +251,67 @@ Security-relevant lifecycle choices:
 
 Clipboard handling is now present and deliberately auto-wiping; the Reveal
 box remains opt-in and per-item.
+
+## 10. Automatic updates
+
+An installed build checks GitHub for a newer **stable** release, downloads it
+in the background, verifies it, and then asks before installing anything.
+
+```
+launch (+20s) ─┐
+daily timer   ─┴─► GET /releases/latest ──► newer? ──► download ──► SHA-256
+                                             │                        │
+                                             no                     verified
+                                             │                        │
+                                          nothing                 ask the user
+                                                                      │
+                                                          lock vault ─┴─► run
+                                                                          installer
+                                                                          ─► quit
+```
+
+### The stable channel
+
+Every push to `main` publishes a **pre-release**. `/releases/latest` excludes
+pre-releases and drafts, so installed users are never pulled onto an
+unreviewed commit — tests run *after* merge here, with no PR gate. Shipping an
+update is a deliberate act: promote a release in the GitHub UI. Remove
+`prerelease: true` from `release.yml` and every push auto-updates every
+install.
+
+### What the integrity check is worth
+
+The installer's SHA-256 is published as `SHA256SUMS.txt` **in the same
+release**. So it detects:
+
+- a corrupted or truncated download,
+- an asset swapped without republishing the release.
+
+It does **not** detect a compromised GitHub account or Actions token: whoever
+can publish a release can publish a matching checksum. The trust anchor is
+GitHub's TLS plus repo account security — not the hash.
+
+Closing that gap needs the checksum signed by a key that never enters CI, with
+the public half pinned in the app. The build is also unsigned, so SmartScreen
+will warn on first run. Neither is fixed today; both are stated rather than
+papered over.
+
+### Invariants
+
+1. **Lock before launching the installer.** It replaces the running `.exe` and
+   restarts it; the master key must be gone first.
+   (`tests/test_views.py::UpdateApplyOrderingTests`)
+2. **Never install without consent.** Downloading is automatic; executing is
+   not. This is an unsigned binary on a machine holding a vault.
+3. **Never downgrade.** `is_newer` compares numerically, so 1.0.10 > 1.0.9.
+4. **A dev build is never updated.** A source checkout reports `0.0.0-dev`,
+   which `parse_version` refuses outright, and `is_packaged_build()` gates the
+   manager. Installing over a checkout would leave two copies side by side.
+5. **A file that fails verification is deleted, never left on disk.**
+6. **The version is baked at build time** into `nomorepwn_app/_build_info.py`
+   by the PyInstaller spec. Reading `NOMOREPWN_VERSION` at runtime evaluates on
+   the *user's* machine, where it is unset — which is why every release used to
+   report `1.0.0` and an updater could not have worked at all.
+
+The vault, backups, and settings live in `%APPDATA%\NoMorePwn`; the installer
+writes only to the program directory and leaves them untouched.

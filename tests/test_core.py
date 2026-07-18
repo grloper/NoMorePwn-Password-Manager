@@ -6,6 +6,8 @@ Run with:  python -m unittest discover tests -v
 
 from __future__ import annotations
 
+import hashlib
+import os
 import json
 import re
 import sqlite3
@@ -16,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import backup, crypto, generator, leakcheck, strength, validation, vault
+from nomorepwn import backup, crypto, generator, leakcheck, strength, updater, validation, vault
 from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
 
@@ -477,6 +479,325 @@ class BulkLeakScanTests(unittest.TestCase):
         outcome = self._scan(["leaked", "unknown"])
         self.assertEqual(outcome.breached, {"leaked": 7})
         self.assertEqual(outcome.failed, {"unknown"})
+
+
+class BundledExtensionTests(unittest.TestCase):
+    """A packaged build must materialise the extension to a stable directory.
+
+    Regression guard: releases shipped no `extension/` folder at all, while
+    `register()` still succeeded and Settings said "✓ Connected" — pointing the
+    user at a directory that had never been created.
+    """
+
+    def setUp(self):
+        import shutil as _shutil
+
+        from nomorepwn_app import browser_bridge
+
+        self.bridge = browser_bridge
+        repo = Path(__file__).resolve().parent.parent
+
+        # Reproduce the layout build/NoMorePwn.spec bundles into _MEIPASS.
+        self.meipass = Path(tempfile.mkdtemp())
+        bundled = self.meipass / "extension"
+        bundled.mkdir()
+        _shutil.copy(repo / "extension" / "manifest.json", bundled / "manifest.json")
+        _shutil.copytree(repo / "extension" / "src", bundled / "src")
+
+        self.data = Path(tempfile.mkdtemp())
+        self._real_data_dir = config_module.DATA_DIR
+        config_module.DATA_DIR = self.data
+
+        self._had_frozen = hasattr(sys, "frozen")
+        sys.frozen = True
+        sys._MEIPASS = str(self.meipass)
+
+    def tearDown(self):
+        config_module.DATA_DIR = self._real_data_dir
+        if not self._had_frozen:
+            del sys.frozen
+        if hasattr(sys, "_MEIPASS"):
+            del sys._MEIPASS
+
+    def test_materialises_to_the_data_dir_not_beside_the_exe(self):
+        """Onefile builds have no writable folder beside the .exe, and
+        _MEIPASS changes every launch — Chrome needs a stable path."""
+        self.assertEqual(self.bridge.extension_dir(), self.data / "extension")
+        self.assertTrue(self.bridge.ensure_extension_files())
+        self.assertTrue((self.data / "extension" / "manifest.json").is_file())
+        self.assertTrue(
+            (self.data / "extension" / "src" / "background" / "service-worker.js").is_file())
+
+    def test_is_idempotent_for_the_same_version(self):
+        self.assertTrue(self.bridge.ensure_extension_files())
+        marker = self.data / "extension" / "marker.tmp"
+        marker.write_text("x", encoding="utf-8")
+        self.assertTrue(self.bridge.ensure_extension_files())
+        self.assertTrue(marker.exists(), "same version should not re-copy")
+
+    def test_refreshes_when_the_version_changes(self):
+        self.assertTrue(self.bridge.ensure_extension_files())
+        stale = self.data / "extension" / "stale.js"
+        stale.write_text("removed upstream", encoding="utf-8")
+        (self.data / "extension" / ".version").write_text("0.0.1", encoding="utf-8")
+
+        self.assertTrue(self.bridge.ensure_extension_files())
+        self.assertFalse(stale.exists(),
+                         "a file removed upstream must not survive an update")
+
+    def test_register_fails_closed_without_a_bundled_extension(self):
+        """No extension to load means no 'Connected' claim."""
+        import shutil as _shutil
+
+        _shutil.rmtree(self.meipass / "extension")
+        self.assertIsNone(self.bridge._bundled_source())
+        self.assertFalse(self.bridge.ensure_extension_files())
+        self.assertEqual(self.bridge.register(), [])
+
+    def test_private_key_is_never_bundled(self):
+        """extension/.keys/ signs the pinned extension ID; shipping it would
+        let anyone build an extension the user's host already authorizes.
+
+        The structural guarantee is that collection walks only `extension/src`
+        and picks up `manifest.json` explicitly — so anything at
+        `extension/.keys` is unreachable by construction, not by an exclude
+        list somebody has to remember to update.
+        """
+        repo = Path(__file__).resolve().parent.parent
+        spec = (repo / "build" / "NoMorePwn.spec").read_text(encoding="utf-8")
+        self.assertIn('os.walk(os.path.join(_ext, "src"))', spec,
+                      "collection must be rooted at extension/src")
+        self.assertNotIn("extension" + os.sep + ".keys",
+                         str(repo / "extension" / "src"))
+
+        # Whatever the bundled tree contains, it must not include a key.
+        bundled = sorted(p.name for p in (self.meipass / "extension").rglob("*")
+                         if p.is_file())
+        self.assertNotIn(".keys", bundled)
+        self.assertFalse([n for n in bundled if n.endswith(".pem")], bundled)
+
+    def test_only_runtime_file_types_are_bundled(self):
+        allowed = {".js", ".json", ".css", ".html"}
+        for path in (self.meipass / "extension").rglob("*"):
+            if path.is_file():
+                self.assertIn(path.suffix, allowed, f"unexpected file: {path.name}")
+
+
+class VersionComparisonTests(unittest.TestCase):
+    """Numeric, not lexicographic — a string compare strands users on .9."""
+
+    def test_numeric_component_ordering(self):
+        self.assertTrue(updater.is_newer("1.0.10", "1.0.9"))
+        self.assertFalse(updater.is_newer("1.0.9", "1.0.10"))
+        self.assertTrue(updater.is_newer("1.2.0", "1.1.99"))
+        self.assertTrue(updater.is_newer("2.0.0", "1.99.99"))
+
+    def test_equal_is_not_newer(self):
+        self.assertFalse(updater.is_newer("1.0.5", "1.0.5"))
+
+    def test_v_prefix_is_tolerated(self):
+        self.assertTrue(updater.is_newer("v1.0.6", "1.0.5"))
+        self.assertFalse(updater.is_newer("v1.0.5", "v1.0.5"))
+
+    def test_dev_builds_never_offered_an_update(self):
+        """A source checkout reports 0.0.0-dev; it has no installer to replace."""
+        self.assertIsNone(updater.parse_version("0.0.0-dev-garbage-x"))
+        self.assertFalse(updater.is_newer("1.0.0", "garbage"))
+        self.assertFalse(updater.is_newer("garbage", "1.0.0"))
+
+    def test_downgrade_is_refused(self):
+        self.assertFalse(updater.is_newer("0.9.0", "1.0.0"))
+
+
+class UpdateCheckTests(unittest.TestCase):
+    """Release parsing, checksum handling, and download verification."""
+
+    INSTALLER = "NoMorePwn-1.0.9-Setup.exe"
+
+    class _Resp:
+        def __init__(self, status=200, payload=None, text="", chunks=None):
+            self.status_code = status
+            self._payload = payload
+            self.text = text
+            self._chunks = chunks or []
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(str(self.status_code))
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("not json")
+            return self._payload
+
+        def iter_content(self, chunk_size=0):
+            return iter(self._chunks)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _release_payload(self, *, prerelease=False, draft=False, assets=None):
+        return {
+            "tag_name": "v1.0.9",
+            "html_url": "https://example.invalid/r",
+            "body": "notes",
+            "prerelease": prerelease,
+            "draft": draft,
+            "assets": assets if assets is not None else [
+                {"name": self.INSTALLER, "size": 4,
+                 "browser_download_url": "https://example.invalid/setup.exe"},
+                {"name": "SHA256SUMS.txt",
+                 "browser_download_url": "https://example.invalid/sums"},
+            ],
+        }
+
+    def _session(self, routes):
+        """A fake session whose .get dispatches on a substring of the URL."""
+        test = self
+
+        class _S:
+            def get(self, url, **kw):
+                for fragment, response in routes.items():
+                    if fragment in url:
+                        return response
+                test.fail(f"unexpected URL: {url}")
+
+        return _S()
+
+    def test_parses_a_release_and_its_checksum(self):
+        body = b"data"
+        digest = hashlib.sha256(body).hexdigest()
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload()),
+            "sums": self._Resp(text=f"{digest}  {self.INSTALLER}\n"),
+        })
+        rel = updater.fetch_latest("o", "r", session=session)
+        self.assertEqual(rel.version, "1.0.9")
+        self.assertEqual(rel.asset_name, self.INSTALLER)
+        self.assertEqual(rel.sha256, digest)
+        self.assertTrue(rel.has_checksum)
+
+    def test_prerelease_is_refused(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload(prerelease=True)),
+        })
+        with self.assertRaises(updater.UpdateError):
+            updater.fetch_latest("o", "r", session=session)
+
+    def test_draft_is_refused(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload(draft=True)),
+        })
+        with self.assertRaises(updater.UpdateError):
+            updater.fetch_latest("o", "r", session=session)
+
+    def test_release_without_installer_is_an_error(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload(assets=[
+                {"name": "notes.txt", "browser_download_url": "u"}])),
+        })
+        with self.assertRaises(updater.UpdateError):
+            updater.fetch_latest("o", "r", session=session)
+
+    def test_portable_exe_is_not_mistaken_for_the_installer(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload(assets=[
+                {"name": "NoMorePwn-1.0.9-portable.exe", "size": 1,
+                 "browser_download_url": "u"},
+                {"name": self.INSTALLER, "size": 1, "browser_download_url": "u2"},
+            ])),
+        })
+        self.assertEqual(
+            updater.fetch_latest("o", "r", session=session).asset_name, self.INSTALLER)
+
+    def test_unreachable_server_raises_update_error(self):
+        import requests
+
+        class _S:
+            def get(self, *a, **kw):
+                raise requests.ConnectionError("offline")
+
+        with self.assertRaises(updater.UpdateError):
+            updater.fetch_latest("o", "r", session=_S())
+
+    def test_check_returns_none_when_current(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload()),
+            "sums": self._Resp(text=""),
+        })
+        self.assertIsNone(updater.check("o", "r", "1.0.9", session=session))
+        self.assertIsNone(updater.check("o", "r", "1.1.0", session=session))
+        self.assertIsNotNone(updater.check("o", "r", "1.0.8", session=session))
+
+    # -- download verification ------------------------------------------
+
+    def _release(self, sha256, size=4):
+        return updater.Release(
+            version="1.0.9", tag="v1.0.9", page_url="", asset_name=self.INSTALLER,
+            asset_url="https://example.invalid/setup.exe", asset_size=size,
+            sha256=sha256, notes="")
+
+    def test_download_writes_a_verified_file(self):
+        body = b"data"
+        rel = self._release(hashlib.sha256(body).hexdigest())
+        session = self._session({"setup.exe": self._Resp(chunks=[body])})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = updater.download(rel, Path(tmp), session=session)
+            self.assertTrue(path.exists())
+            self.assertEqual(path.read_bytes(), body)
+
+    def test_checksum_mismatch_raises_and_deletes_the_file(self):
+        """A file that failed verification must never survive on disk."""
+        rel = self._release(hashlib.sha256(b"expected").hexdigest())
+        session = self._session({"setup.exe": self._Resp(chunks=[b"tampered"])})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+            self.assertEqual(list(Path(tmp).glob("*")), [],
+                             "unverified installer was left on disk")
+
+    def test_oversized_download_is_aborted_and_removed(self):
+        rel = self._release(None)
+        chunk = b"x" * (1024 * 1024)
+        huge = [chunk] * (updater.MAX_DOWNLOAD_BYTES // len(chunk) + 2)
+        session = self._session({"setup.exe": self._Resp(chunks=huge)})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+            self.assertEqual(list(Path(tmp).glob("*")), [])
+
+    def test_empty_download_is_rejected(self):
+        rel = self._release(None)
+        session = self._session({"setup.exe": self._Resp(chunks=[])})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+
+    def test_network_failure_mid_download_leaves_nothing_behind(self):
+        import requests
+
+        rel = self._release(None)
+
+        class _Broken(self._Resp):
+            def iter_content(self, chunk_size=0):
+                yield b"partial"
+                raise requests.ConnectionError("dropped")
+
+        session = self._session({"setup.exe": _Broken()})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+            self.assertEqual(list(Path(tmp).glob("*")), [])
+
+    def test_checksum_parser_ignores_junk_lines(self):
+        digest = "a" * 64
+        parsed = updater._parse_checksums(
+            f"# comment\n\n{digest}  file.exe\nnot-a-hash  other.exe\n")
+        self.assertEqual(parsed, {"file.exe": digest})
 
 
 class NativeHostTests(unittest.TestCase):

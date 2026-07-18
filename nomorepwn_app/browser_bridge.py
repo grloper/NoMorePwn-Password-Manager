@@ -61,15 +61,70 @@ class BridgeStatus:
         return bool(self.registered)
 
 
-def extension_dir() -> Path:
-    """Where the unpacked extension lives, for 'Load unpacked'.
+def _bundled_source() -> Path | None:
+    """The read-only copy of the extension inside a frozen build.
 
-    Frozen builds ship it beside the executable; from source it sits at the
-    repo root.
+    PyInstaller unpacks bundled data to ``sys._MEIPASS``, a temp directory
+    that is different on every launch — fine to copy *from*, useless to point
+    Chrome at.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return None
+    candidate = Path(base) / "extension"
+    return candidate if candidate.is_dir() else None
+
+
+def extension_dir() -> Path:
+    """The stable directory to hand to Chrome's "Load unpacked".
+
+    From source this is the repo's ``extension/``. In a frozen build it is
+    ``%APPDATA%\\NoMorePwn\\extension`` — *not* a path beside the .exe, which
+    would not exist for the portable single-file build, and not ``_MEIPASS``,
+    which changes every launch and would break the loaded extension the moment
+    the app restarted.
     """
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "extension"
+        return Path(config.DATA_DIR) / "extension"
     return Path(__file__).resolve().parent.parent / "extension"
+
+
+def ensure_extension_files() -> bool:
+    """Materialise the bundled extension to its stable directory.
+
+    Copies on first run and after an update (the version stamp changes). A
+    source checkout needs no copy. Returns whether a usable extension folder
+    exists afterwards.
+    """
+    target = extension_dir()
+    if not getattr(sys, "frozen", False):
+        return (target / "manifest.json").is_file()
+
+    source = _bundled_source()
+    if source is None:
+        return False
+
+    from . import __version__
+
+    stamp = target / ".version"
+    if (target / "manifest.json").is_file() and stamp.is_file():
+        try:
+            if stamp.read_text(encoding="utf-8").strip() == __version__:
+                return True
+        except OSError:
+            pass
+
+    try:
+        # Replace wholesale so a file removed upstream does not linger and
+        # get loaded by Chrome.
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(source, target)
+        stamp.write_text(__version__, encoding="utf-8")
+    except OSError:
+        return (target / "manifest.json").is_file()
+
+    return (target / "manifest.json").is_file()
 
 
 def manifest_path() -> Path:
@@ -130,10 +185,19 @@ def write_manifest() -> Path:
 
 
 def register(browsers: list[str] | None = None) -> list[str]:
-    """Register the host with each browser. Returns the names that succeeded."""
+    """Register the host with each browser. Returns the names that succeeded.
+
+    Fails closed when there is no extension folder to load. Registering the
+    host regardless used to report "✓ Connected" for a build that shipped no
+    extension at all — the user was told to load a directory that had never
+    been created.
+    """
     if sys.platform != "win32":
         return []
     import winreg
+
+    if not ensure_extension_files():
+        return []
 
     write_manifest()
     done = []
@@ -167,6 +231,7 @@ def unregister() -> None:
 
 def status() -> BridgeStatus:
     """Inspect what is registered right now."""
+    ensure_extension_files()
     base = BridgeStatus(
         registered=[],
         manifest_path=manifest_path(),
@@ -192,6 +257,6 @@ def status() -> BridgeStatus:
         if str(value).strip().lower() == expected.lower() and manifest_path().exists():
             base.registered.append(name)
 
-    if not base.extension_dir.exists():
-        base.detail = "The extension folder is missing from this install."
+    if not (base.extension_dir / "manifest.json").is_file():
+        base.detail = "The browser extension is missing from this install."
     return base

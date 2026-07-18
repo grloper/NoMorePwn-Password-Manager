@@ -22,8 +22,9 @@ from PySide6.QtWidgets import QApplication
 from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 
-from . import startup, theme, workers
+from . import browser_bridge, startup, theme, workers
 from .backup_manager import BackupManager
+from .update_manager import UpdateManager
 from .context import AppContext
 from .dialogs import CloseChoiceDialog, confirm
 from .main_window import MainWindow
@@ -57,6 +58,7 @@ class AppController(QObject):
         self.clipboard = ClipboardManager()
         self.window = MainWindow(self.db_path)
         self.backups = BackupManager(self.settings, lambda: self.vault, self)
+        self.updates = UpdateManager(self.settings, self)
         self.ctx = AppContext(
             settings=self.settings,
             toast=self.window.toast,
@@ -67,6 +69,8 @@ class AppController(QObject):
             backup_now=self.backups.backup_now,
             open_restore=self.open_restore,
             get_vault=lambda: self.vault,
+            updates=self.updates,
+            apply_update=self.apply_update,
         )
         self.window.set_context(self.ctx)
         self.tray = TrayIcon(self)
@@ -86,6 +90,14 @@ class AppController(QObject):
         self.tray.quit_requested.connect(self.quit)
         self.backups.failed.connect(
             lambda msg: self.ctx.toast.show(f"Backup failed: {msg}", "error", 5000))
+        self.updates.update_ready.connect(self._on_update_ready)
+        self.updates.start()
+
+        # Unpack the bundled browser extension to its stable directory. Cheap
+        # and version-stamped, so it is a no-op after the first launch on a
+        # given build — but it means the folder always exists when the user
+        # goes looking for it, and it refreshes itself after an update.
+        browser_bridge.ensure_extension_files()
 
         app.installEventFilter(self)
 
@@ -229,6 +241,51 @@ class AppController(QObject):
             self.vault.lock()
             self.vault = None
         self.clipboard._wipe()
+        self.window.teardown_shell()
+        self.window.hide()
+        self.tray.hide()
+        self.app.quit()
+
+    # ------------------------------------------------------------------
+    # Updates
+    # ------------------------------------------------------------------
+
+    def _on_update_ready(self, release, installer) -> None:
+        """A verified installer is waiting. Tell the user; never auto-install."""
+        self._notify(
+            f"NoMorePwn {release.version} is ready",
+            "Open Settings → Updates to install it.")
+        self.ctx.toast.show(
+            f"Update {release.version} downloaded — install it from Settings.",
+            "info", 6000)
+
+    def apply_update(self, installer) -> None:
+        """Lock, flush, launch the installer, and quit.
+
+        Ordering is the security-relevant part and mirrors `quit()`:
+        flush the backup *while we still hold the key*, then lock, then hand
+        off. The installer replaces this executable and restarts it, so the
+        master key must be gone before it runs, and the process must exit or
+        Inno cannot overwrite the file it is running from.
+        """
+        if self._quitting:
+            return
+
+        def lock_everything() -> None:
+            self.autolock.stop()
+            self.backups.flush_sync()
+            if self.vault is not None:
+                self.vault.lock()
+                self.vault = None
+            self.clipboard._wipe()
+
+        if not self.updates.apply(installer, lock_everything):
+            self.ctx.toast.show("Could not start the installer.", "error", 5000)
+            return
+
+        # The vault is already locked; go straight to teardown rather than
+        # through quit(), which would try to flush a backup without a key.
+        self._quitting = True
         self.window.teardown_shell()
         self.window.hide()
         self.tray.hide()

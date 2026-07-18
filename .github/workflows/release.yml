@@ -61,6 +61,11 @@ jobs:
           mkdir -p release
           cp "dist/NoMorePwn.exe" "release/NoMorePwn-${{ steps.version.outputs.version }}-portable.exe"
           cp "dist/NoMorePwn-Setup.exe" "release/NoMorePwn-${{ steps.version.outputs.version }}-Setup.exe"
+          # The in-app updater verifies the installer against this before it
+          # will execute it. Filenames must be bare (no directory component)
+          # because the updater matches on the asset name.
+          cd release && sha256sum *.exe > SHA256SUMS.txt && cd ..
+          cat release/SHA256SUMS.txt
           ls -la release
 
       - name: Upload build artifacts
@@ -76,6 +81,13 @@ jobs:
           name: NoMorePwn v${{ steps.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Every push to main ships as a PRE-RELEASE. The in-app updater reads
+          # /releases/latest, which excludes pre-releases — so installed users
+          # are never pulled onto an unreviewed commit. To ship an update,
+          # promote a release in the GitHub UI ("Set as the latest release").
+          # This is the entire stable-channel mechanism; unset it and every
+          # push auto-updates every install.
+          prerelease: true
           body: |
             **NoMorePwn v${{ steps.version.outputs.version }}** — local-first, tray-resident Windows password manager.
 
@@ -87,3 +99,4 @@ jobs:
           files: |
             release/NoMorePwn-${{ steps.version.outputs.version }}-portable.exe
             release/NoMorePwn-${{ steps.version.outputs.version }}-Setup.exe
+            release/SHA256SUMS.txt

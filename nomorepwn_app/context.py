@@ -23,6 +23,10 @@ class AppContext:
     backup_now: Callable[[], None] = lambda: None
     open_restore: Callable[[], None] = lambda: None
     get_vault: Callable[[], object] = lambda: None
+    # Auto-update: the UpdateManager, and the apply hook that locks the
+    # vault, launches the installer, and quits.
+    updates: object = None
+    apply_update: Callable[[object], None] = lambda installer: None
 
     def copy_secret(self, text: str, label: str = "Copied to clipboard") -> None:
         if not text:

@@ -110,6 +110,12 @@ Scores your vault 0–100 and surfaces weak, reused, stale, and MFA-less account
 🎲 **Generator with a conscience.**
 CSPRNG-backed (`secrets`, never `random`) passwords and passphrases with live zxcvbn scoring — plus a clipboard that **wipes itself** after 20s so your password doesn't linger.
 
+🗂 **Groups that file themselves.**
+Sort entries into groups — pick from Email, Gaming, Banking & Finance, Work and more, or type your own. Add `gmail.com` or `steampowered.com` and the right group is suggested automatically from a catalogue of 116 known services (it only ever *suggests*, and never re-files something you already grouped). The list collapses into labelled sections and search matches group names too. Group labels are stored as **plaintext metadata** beside the service name — convenient to filter, so don't put secrets in them.
+
+🧯 **Typos caught before they lock you out.**
+A password ending in a stray space is the classic copy-paste slip, and saving it silently means the login just fails later with no clue why. NoMorePwn spots leading/trailing whitespace, shows you the invisible character, and asks — it never trims your password for you, because that space might be real.
+
 💾 **Backups you never have to think about.**
 Every change refreshes a sealed `.nmpbak` copy (5 generations kept), flushed before the vault locks so nothing is ever lost. Point it at Dropbox/OneDrive and your backup syncs offsite as **ciphertext** — optionally locked behind a *separate* passphrase, so the backup file stays useless even to someone holding your master password.
 
@@ -132,6 +138,12 @@ Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, ke
 `%APPDATA%\NoMorePwn\vault.db` (encrypted) + `settings.json` (non-secret prefs)
 + `backups\vault-backup.nmpbak` (sealed auto-backup, plus `.1`, `.2` … generations).
 Point `NOMOREPWN_DATA` anywhere else — an encrypted volume, a USB stick — and it just works.
+
+You may also see **`vault.db.v1-premigration`**. When a new version needs to change the database
+layout, NoMorePwn parks an untouched copy of the old file beside it *before* upgrading, and never
+deletes it. It is a normal encrypted vault — as safe (and as sensitive) as `vault.db` itself, and
+openable with the same master password. Keep it until you're confident the upgrade went fine; you
+can delete it any time after that.
 
 ### 💾 Backup & restore
 

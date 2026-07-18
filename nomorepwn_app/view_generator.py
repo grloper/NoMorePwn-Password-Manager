@@ -35,10 +35,7 @@ class GeneratorView(QWidget):
         card = Card(padding=24)
         card.setMinimumWidth(560)
         card.setMaximumWidth(760)
-        self.panel = GeneratorPanel(show_use_button=False)
+        self.panel = GeneratorPanel(show_use_button=False, ctx=self._ctx)
         card.add(self.panel)
         lay.addWidget(card)
         lay.addStretch(1)
-
-        self.panel.copy_btn.clicked.connect(
-            lambda: self._ctx.copy_secret(self.panel.value(), "Password copied"))

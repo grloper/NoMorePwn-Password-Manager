@@ -56,6 +56,95 @@ def confirm(parent, title: str, message: str, confirm_text: str = "Confirm",
     return dlg.exec() == QDialog.Accepted
 
 
+WS_REMOVE = "remove"
+WS_KEEP = "keep"
+
+
+def _visualise_whitespace(value: str, finding) -> str:
+    """Render surrounding whitespace as visible glyphs.
+
+    The whole problem is that the character is invisible, so the dialog has to
+    show it. Middle of the string is elided — this is a hint, not a reveal.
+    """
+    marks = {" ": "·", "\t": "→", "\n": "¶", "\r": "¶", " ": "·"}
+    mark = lambda run: "".join(marks.get(c, "·") for c in run)  # noqa: E731
+    body = finding.cleaned
+    if len(body) > 24:
+        body = body[:12] + "…" + body[-8:]
+    return f"{mark(finding.leading)}{body}{mark(finding.trailing)}"
+
+
+def ask_whitespace_fix(parent, value: str, finding) -> str | None:
+    """Ask whether to drop surrounding whitespace from a password.
+
+    Returns ``WS_REMOVE``, ``WS_KEEP``, or ``None`` to go back to editing.
+    Never decides on the user's behalf: a trailing space can be a real part
+    of a password, and silently trimming it would lock them out.
+    """
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Check this password")
+    dlg.setModal(True)
+    dlg.setMinimumWidth(460)
+    p = theme.active()
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(26, 24, 26, 22)
+    lay.setSpacing(14)
+
+    head = QHBoxLayout()
+    head.setSpacing(12)
+    ico = QLabel()
+    ico.setPixmap(icons.pixmap("alert-triangle", p.warning, 26))
+    ico.setAlignment(Qt.AlignTop)
+    head.addWidget(ico)
+    tcol = QVBoxLayout()
+    tcol.setSpacing(6)
+    tcol.addWidget(components.heading("Check this password", "H3"))
+    msg = QLabel(f"{finding.describe()} That is usually an accidental copy-paste, "
+                 "but it can be a real part of the password.")
+    msg.setObjectName("Muted")
+    msg.setWordWrap(True)
+    tcol.addWidget(msg)
+    head.addLayout(tcol, 1)
+    lay.addLayout(head)
+
+    preview = QLabel(_visualise_whitespace(value, finding))
+    preview.setStyleSheet(
+        f"font-family:'Cascadia Code','Consolas',monospace; font-size:15px;"
+        f" padding:10px 14px; background:{p.field};"
+        f" border:1px solid {p.border_strong}; border-radius:10px; color:{p.text};"
+    )
+    lay.addWidget(preview)
+
+    choice: dict[str, str | None] = {"value": None}
+
+    def _pick(what: str) -> None:
+        choice["value"] = what
+        dlg.accept()
+
+    btns = QHBoxLayout()
+    cancel = components.button("Back to editing", object_name="Ghost")
+    cancel.clicked.connect(dlg.reject)
+    btns.addWidget(cancel)
+    btns.addStretch(1)
+    keep = components.button("Keep as typed", object_name="Ghost")
+    keep.clicked.connect(lambda: _pick(WS_KEEP))
+    btns.addWidget(keep)
+    remove = QPushButton("Remove it")
+    remove.setObjectName("Primary")
+    remove.setCursor(Qt.PointingHandCursor)
+    remove.clicked.connect(lambda: _pick(WS_REMOVE))
+    btns.addWidget(remove)
+    # Nothing but whitespace: removing it would leave an empty password.
+    if finding.cleaned_is_empty:
+        remove.setEnabled(False)
+        remove.setToolTip("This password is only whitespace — removing it would leave it empty.")
+    lay.addLayout(btns)
+
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    return choice["value"]
+
+
 def ask_new_passphrase(parent, title: str, message: str, min_length: int = 8) -> str | None:
     """Prompt for a new passphrase twice. Returns None if cancelled."""
     dlg = QDialog(parent)

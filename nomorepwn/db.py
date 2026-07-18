@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_meta (
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS credentials (
     password_sha256 TEXT    NOT NULL,
     notes_enc       BLOB,
     mfa_enabled     INTEGER NOT NULL DEFAULT 0 CHECK (mfa_enabled IN (0, 1)),
+    group_name      TEXT    NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     UNIQUE (service_name, username)
@@ -74,6 +75,68 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+
+
+# --------------------------------------------------------------------------
+# Schema migration
+# --------------------------------------------------------------------------
+#
+# `init_schema` only ever runs inside `create_vault`, so a vault created by an
+# older build keeps its original columns forever. Until v2 the version number
+# was write-only — bumping it migrated nothing. These functions make it real.
+#
+# Rules for anything added here:
+#   * Migrations run inside the caller's transaction and must be idempotent —
+#     re-running one must be a no-op, so a crash mid-upgrade is recoverable.
+#   * Never rewrite `password_enc`, `notes_enc`, or a row's `uuid`. The AAD is
+#     bound to the uuid (`cred:{uuid}:password`), so touching it makes every
+#     secret permanently undecryptable and there is no rekey path in this repo.
+#   * Adding a column is safe precisely because it does not touch either.
+
+def read_schema_version(conn: sqlite3.Connection) -> int:
+    """The schema version on disk. Vaults predating versioning read as 1."""
+    raw = get_meta(conn, "schema_version")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
+
+
+def credential_columns(conn: sqlite3.Connection) -> set[str]:
+    """Column names on `credentials`. Static SQL; the table name is a literal."""
+    return {row["name"] for row in conn.execute("PRAGMA table_info(credentials)")}
+
+
+def _migrate_to_v2(conn: sqlite3.Connection) -> None:
+    """v2: user-assigned groups.
+
+    Plaintext, like `service_name` and `username` beside it — group names are
+    filterable metadata, not secrets. `DEFAULT ''` means every existing
+    credential lands in the ungrouped bucket rather than needing a backfill.
+    """
+    if "group_name" not in credential_columns(conn):
+        conn.execute(
+            "ALTER TABLE credentials ADD COLUMN group_name TEXT NOT NULL DEFAULT ''"
+        )
+
+
+_MIGRATIONS = {2: _migrate_to_v2}
+
+
+def migrate(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Upgrade the schema to SCHEMA_VERSION. Returns (from_version, to_version).
+
+    A no-op when already current, so callers can invoke it on every unlock.
+    """
+    start = read_schema_version(conn)
+    if start >= SCHEMA_VERSION:
+        return start, start
+    for version in range(start + 1, SCHEMA_VERSION + 1):
+        step = _MIGRATIONS.get(version)
+        if step is not None:
+            step(conn)
+        set_meta(conn, "schema_version", str(version))
+    return start, SCHEMA_VERSION
 
 
 def snapshot_bytes(db_path: str | Path) -> bytes:
@@ -137,12 +200,13 @@ def insert_credential(
     notes_enc: bytes | None,
     mfa_enabled: bool,
     now_iso: str,
+    group_name: str = "",
 ) -> int:
     cursor = conn.execute(
         "INSERT INTO credentials "
         "(uuid, service_name, username, password_enc, password_sha256, "
-        " notes_enc, mfa_enabled, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " notes_enc, mfa_enabled, group_name, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             uuid,
             service_name,
@@ -151,6 +215,7 @@ def insert_credential(
             password_sha256,
             notes_enc,
             1 if mfa_enabled else 0,
+            group_name,
             now_iso,
             now_iso,
         ),
@@ -202,13 +267,34 @@ def update_credential_meta(
     notes_enc: bytes | None,
     mfa_enabled: bool,
     now_iso: str,
+    group_name: str = "",
 ) -> None:
     """Update everything except the password (which has its own history path)."""
     conn.execute(
         "UPDATE credentials "
-        "SET service_name = ?, username = ?, notes_enc = ?, mfa_enabled = ?, updated_at = ? "
+        "SET service_name = ?, username = ?, notes_enc = ?, mfa_enabled = ?, "
+        "    group_name = ?, updated_at = ? "
         "WHERE id = ?",
-        (service_name, username, notes_enc, 1 if mfa_enabled else 0, now_iso, cred_id),
+        (service_name, username, notes_enc, 1 if mfa_enabled else 0,
+         group_name, now_iso, cred_id),
+    )
+
+
+def list_group_names(conn: sqlite3.Connection) -> list[str]:
+    """Distinct non-empty group names currently in use, alphabetically."""
+    rows = conn.execute(
+        "SELECT DISTINCT group_name FROM credentials "
+        "WHERE group_name <> '' ORDER BY group_name COLLATE NOCASE"
+    ).fetchall()
+    return [row["group_name"] for row in rows]
+
+
+def set_group_name(
+    conn: sqlite3.Connection, cred_id: int, group_name: str, now_iso: str
+) -> None:
+    conn.execute(
+        "UPDATE credentials SET group_name = ?, updated_at = ? WHERE id = ?",
+        (group_name, now_iso, cred_id),
     )
 
 

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from nomorepwn import vault
+from nomorepwn import groups, vault
 
 from . import components, icons, theme
 from .components import Avatar, Pill
@@ -18,6 +18,30 @@ from .context import AppContext
 from .detail import CredentialDetail
 from .editor import CredentialEditor
 from .util import initials
+
+
+class _GroupHeader(QWidget):
+    """A non-selectable divider naming a group and how many items it holds."""
+
+    def __init__(self, label: str, count: int):
+        super().__init__()
+        p = theme.active()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 2)
+        lay.setSpacing(8)
+        name = QLabel(label.upper())
+        name.setStyleSheet(
+            f"color:{p.text_faint}; font-size:11px; font-weight:800;"
+            f" letter-spacing:0.8px;"
+        )
+        lay.addWidget(name)
+        tally = QLabel(str(count))
+        tally.setStyleSheet(
+            f"color:{p.text_faint}; font-size:11px; font-weight:700;"
+            f" background:{p.surface_alt}; border-radius:7px; padding:1px 7px;"
+        )
+        lay.addWidget(tally)
+        lay.addStretch(1)
 
 
 class _ItemRow(QWidget):
@@ -167,16 +191,33 @@ class VaultView(QWidget):
         term = self.search.text().strip().lower()
         self.list.blockSignals(True)
         self.list.clear()
-        for cred in self._creds:
-            if term and term not in (cred["service_name"] + " " + cred["username"]).lower():
-                continue
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, cred["id"])
-            item.setSizeHint(QSize(0, 60))
-            self.list.addItem(item)
-            self.list.setItemWidget(item, _ItemRow(cred))
-            if cred["id"] == self._selected_id:
-                self.list.setCurrentItem(item)
+
+        matching = [
+            cred for cred in self._creds
+            if not term or term in (
+                cred["service_name"] + " " + cred["username"] + " "
+                + (cred.get("group_name") or "")
+            ).lower()
+        ]
+
+        for label, members in groups.group_credentials(matching):
+            # A header is a decoration, never a selection target — leaving it
+            # selectable would let arrow-key navigation land on a non-item.
+            header = QListWidgetItem()
+            header.setFlags(Qt.NoItemFlags)
+            header.setData(Qt.UserRole, None)
+            header.setSizeHint(QSize(0, 30))
+            self.list.addItem(header)
+            self.list.setItemWidget(header, _GroupHeader(label, len(members)))
+
+            for cred in members:
+                item = QListWidgetItem()
+                item.setData(Qt.UserRole, cred["id"])
+                item.setSizeHint(QSize(0, 60))
+                self.list.addItem(item)
+                self.list.setItemWidget(item, _ItemRow(cred))
+                if cred["id"] == self._selected_id:
+                    self.list.setCurrentItem(item)
         self.list.blockSignals(False)
 
     def _apply_filter(self) -> None:

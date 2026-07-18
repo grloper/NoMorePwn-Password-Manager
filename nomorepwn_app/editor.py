@@ -6,12 +6,13 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea, QVBoxLayout,
+    QWidget,
 )
 
-from nomorepwn import strength, validation, vault
+from nomorepwn import groups, strength, validation, vault
 
-from . import components, theme, workers
+from . import components, dialogs, theme, workers
 from .components import StrengthMeter
 from .context import AppContext
 from .generator_widget import GeneratorPanel
@@ -65,6 +66,17 @@ class CredentialEditor(QWidget):
         form.addWidget(self.username)
         form.addSpacing(8)
 
+        form.addWidget(components.field_label("Group (optional)"))
+        # Editable: the dropdown offers known groups, but any label the user
+        # types is equally valid — this is their filing system, not ours.
+        self.group = QComboBox()
+        self.group.setEditable(True)
+        self.group.setInsertPolicy(QComboBox.NoInsert)
+        self.group.lineEdit().setPlaceholderText("Ungrouped — pick one or type your own")
+        self.group.lineEdit().setMaxLength(validation.MAX_GROUP_LEN)
+        form.addWidget(self.group)
+        form.addSpacing(8)
+
         pw_label_row = QHBoxLayout()
         pw_label_row.addWidget(components.field_label("Password"))
         pw_label_row.addStretch(1)
@@ -91,7 +103,7 @@ class CredentialEditor(QWidget):
         self.gen_box.setObjectName("Card")
         gb = QVBoxLayout(self.gen_box)
         gb.setContentsMargins(16, 16, 16, 16)
-        self.generator = GeneratorPanel(show_use_button=True)
+        self.generator = GeneratorPanel(show_use_button=True, ctx=ctx)
         gb.addWidget(self.generator)
         self.gen_box.setVisible(False)
         form.addSpacing(6)
@@ -124,6 +136,8 @@ class CredentialEditor(QWidget):
 
         # Wiring
         self.password.textChanged.connect(self._update_strength)
+        # Suggest a group once they stop typing the service, not per keystroke.
+        self.service.editingFinished.connect(self._suggest_group_for_service)
         self.gen_toggle.clicked.connect(self._toggle_generator)
         self.generator.use_requested.connect(self._use_generated)
         self.copy_pw.clicked.connect(lambda: self._ctx.copy_secret(self.password.text(), "Password copied"))
@@ -131,6 +145,32 @@ class CredentialEditor(QWidget):
         self.save_btn.clicked.connect(self._save)
 
     # ------------------------------------------------------------------
+
+    def _refresh_group_choices(self, selected: str = "") -> None:
+        """Repopulate the dropdown: known groups first, then the user's own."""
+        vlt = self._get_vault()
+        try:
+            existing = vlt.list_groups() if vlt else []
+        except Exception:  # noqa: BLE001 - a locked vault must not break the editor
+            existing = []
+        self.group.blockSignals(True)
+        self.group.clear()
+        self.group.addItem("")          # ungrouped
+        self.group.addItems(groups.choices(existing))
+        self.group.setCurrentText(selected)
+        self.group.blockSignals(False)
+
+    def _suggest_group_for_service(self) -> None:
+        """Pre-fill the group from a recognised service, e.g. gmail -> Email.
+
+        Only ever fills an *empty* box on a *new* item: never silently
+        re-files something the user already grouped.
+        """
+        if self._mode != "add" or self.group.currentText().strip():
+            return
+        suggested = groups.suggest_group(self.service.text())
+        if suggested:
+            self.group.setCurrentText(suggested)
 
     def load_new(self) -> None:
         self._mode = "add"
@@ -142,7 +182,9 @@ class CredentialEditor(QWidget):
         self.notes.clear()
         self.mfa.setChecked(False)
         self.gen_box.setVisible(False)
-        self._original = {"service": "", "username": "", "password": "", "notes": "", "mfa": False}
+        self._refresh_group_choices("")
+        self._original = {"service": "", "username": "", "password": "", "notes": "",
+                          "mfa": False, "group": ""}
         self.service.setFocus()
 
     def load_edit(self, cred: dict) -> None:
@@ -161,9 +203,12 @@ class CredentialEditor(QWidget):
         self.notes.setPlainText(current_notes)
         self.mfa.setChecked(bool(cred["mfa_enabled"]))
         self.gen_box.setVisible(False)
+        current_group = cred.get("group_name", "")
+        self._refresh_group_choices(current_group)
         self._original = {
             "service": cred["service_name"], "username": cred["username"],
             "password": current_pw, "notes": current_notes, "mfa": bool(cred["mfa_enabled"]),
+            "group": current_group,
         }
         self.service.setFocus()
 
@@ -174,6 +219,7 @@ class CredentialEditor(QWidget):
             or self.password.text() != self._original.get("password", "")
             or self.notes.toPlainText() != self._original.get("notes", "")
             or self.mfa.isChecked() != self._original.get("mfa", False)
+            or self.group.currentText().strip() != self._original.get("group", "")
         )
 
     # ------------------------------------------------------------------
@@ -202,18 +248,36 @@ class CredentialEditor(QWidget):
             return
         service = self.service.text().strip()
         username = self.username.text().strip()
+        group_name = self.group.currentText().strip()
         password = self.password.text()
         notes = self.notes.toPlainText()
         mfa = self.mfa.isChecked()
+
+        # A password that ends in a space is usually a copy-paste slip, and it
+        # is saved silently today — the user only finds out when the login
+        # fails. Ask; never trim on their behalf, because the space can be
+        # real. Only for a new or changed password, so editing an entry whose
+        # password legitimately ends in a space doesn't nag on every save.
+        if password and password != self._original.get("password", ""):
+            finding = validation.inspect_password_whitespace(password)
+            if finding.found:
+                choice = dialogs.ask_whitespace_fix(self, password, finding)
+                if choice is None:
+                    return
+                if choice == dialogs.WS_REMOVE:
+                    password = finding.cleaned
+                    self.password.setText(password)
 
         try:
             if self._mode == "add":
                 if not password:
                     self._ctx.toast.show("Enter or generate a password first.", "error")
                     return
-                vlt.add_credential(service, username, password, notes, mfa)
+                vlt.add_credential(service, username, password, notes, mfa,
+                                   group_name=group_name)
             else:
-                vlt.update_credential(self._cred_id, service, username, notes, mfa)
+                vlt.update_credential(self._cred_id, service, username, notes, mfa,
+                                      group_name=group_name)
                 if password != self._original.get("password", ""):
                     if not password:
                         self._ctx.toast.show("Password cannot be empty.", "error")

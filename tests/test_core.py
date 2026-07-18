@@ -18,9 +18,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import backup, crypto, generator, leakcheck, strength, updater, validation, vault
+from nomorepwn import (
+    backup, crypto, generator, groups, leakcheck, strength, updater, validation, vault,
+)
 from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
+from nomorepwn import db
 
 MASTER = "correct horse battery staple 42"
 
@@ -104,6 +107,337 @@ class ValidationTests(unittest.TestCase):
             validation.validate_password("abc\x00def")
         with self.assertRaises(validation.ValidationError):
             validation.validate_password("a" * 1025)
+
+
+class PasswordWhitespaceTests(unittest.TestCase):
+    """Surrounding whitespace is *reported*, never removed.
+
+    A trailing space is usually a copy-paste slip, but it can be a real part
+    of a password — trimming it silently would lock the user out of the
+    account it belongs to. The prompt is the only thing allowed to decide.
+    """
+
+    def test_clean_password_reports_nothing(self):
+        f = validation.inspect_password_whitespace("hunter2")
+        self.assertFalse(f.found)
+        self.assertEqual(f.describe(), "")
+
+    def test_trailing_space_is_found(self):
+        f = validation.inspect_password_whitespace("hunter2 ")
+        self.assertTrue(f.found)
+        self.assertEqual(f.trailing, " ")
+        self.assertEqual(f.leading, "")
+        self.assertEqual(f.cleaned, "hunter2")
+        self.assertIn("ends with a space", f.describe())
+
+    def test_leading_space_is_found(self):
+        f = validation.inspect_password_whitespace(" hunter2")
+        self.assertTrue(f.found)
+        self.assertEqual(f.leading, " ")
+        self.assertEqual(f.trailing, "")
+        self.assertIn("starts with a space", f.describe())
+
+    def test_both_ends_are_described(self):
+        f = validation.inspect_password_whitespace(" hunter2\t")
+        desc = f.describe()
+        self.assertIn("starts with a space", desc)
+        self.assertIn("ends with a tab", desc)
+        self.assertEqual(f.cleaned, "hunter2")
+
+    def test_multiple_trailing_spaces_are_counted(self):
+        f = validation.inspect_password_whitespace("hunter2   ")
+        self.assertEqual(f.trailing, "   ")
+        self.assertIn("3 spaces", f.describe())
+
+    def test_newline_and_tab_are_named(self):
+        self.assertIn("a newline", validation.inspect_password_whitespace("x\n").describe())
+        self.assertIn("a tab", validation.inspect_password_whitespace("x\t").describe())
+
+    def test_non_breaking_space_is_caught(self):
+        # The nastiest case: renders identically to a space and survives most
+        # copy-paste paths. str.strip() does treat it as whitespace.
+        f = validation.inspect_password_whitespace("hunter2 ")
+        self.assertTrue(f.found)
+        self.assertEqual(f.cleaned, "hunter2")
+
+    def test_interior_spaces_are_not_flagged(self):
+        # "correct horse battery staple" is a good password, not a mistake.
+        f = validation.inspect_password_whitespace("correct horse battery staple")
+        self.assertFalse(f.found)
+
+    def test_whitespace_only_password_cannot_be_cleaned_away(self):
+        f = validation.inspect_password_whitespace("   ")
+        self.assertTrue(f.found)
+        self.assertTrue(f.cleaned_is_empty)
+
+    def test_empty_and_non_string_are_inert(self):
+        self.assertFalse(validation.inspect_password_whitespace("").found)
+        self.assertFalse(validation.inspect_password_whitespace(None).found)
+
+    def test_inspection_never_mutates_the_password(self):
+        original = "  hunter2  "
+        validation.inspect_password_whitespace(original)
+        self.assertEqual(original, "  hunter2  ")
+
+    def test_validate_password_still_does_not_strip(self):
+        """Guards the invariant this feature is designed around.
+
+        The fix for trailing whitespace is a prompt, not a `.strip()` in
+        validation. If someone "simplifies" this later by stripping here,
+        every password with deliberate surrounding whitespace silently
+        changes and the vault stops matching the real account.
+        """
+        self.assertEqual(validation.validate_password(" pw "), " pw ")
+        self.assertEqual(validation.validate_password("pw "), "pw ")
+
+
+class SchemaMigrationTests(unittest.TestCase):
+    """Upgrading a v1 vault in place, without losing a single secret.
+
+    `init_schema` only runs inside `create_vault`, so a vault made by an older
+    build keeps its original columns forever. Until v2 the version number was
+    write-only and bumping it migrated nothing. These tests exist because
+    getting this wrong on a password vault is unrecoverable.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "vault.db"
+        self.addCleanup(self.tmp.cleanup)
+
+    def _make_v1_vault(self) -> None:
+        """Build a real vault, then rewind it to look exactly like v1."""
+        vault.create_vault(self.path, MASTER)
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        vlt.add_credential("github.com", "alice", "s3cret-pass", notes="my note")
+        vlt.add_credential("gmail.com", "bob", "other-pass")
+        vlt.lock()
+        # Drop the column and the version marker so this is genuinely v1.
+        conn = sqlite3.connect(str(self.path))
+        try:
+            conn.execute("ALTER TABLE credentials DROP COLUMN group_name")
+            conn.execute("DELETE FROM vault_meta WHERE key = 'schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v1_vault_is_detected_as_version_1(self):
+        self._make_v1_vault()
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), 1)
+            self.assertNotIn("group_name", db.credential_columns(conn))
+
+    def test_unlock_migrates_and_secrets_still_decrypt(self):
+        """The whole point: upgrading must not cost a single password.
+
+        AAD is bound to each row's uuid, so adding a column must leave every
+        secret decryptable. If a migration ever rewrote uuid or password_enc,
+        this is what would catch it.
+        """
+        self._make_v1_vault()
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        try:
+            creds = {c["service_name"]: c for c in vlt.list_credentials()}
+            self.assertEqual(len(creds), 2)
+            self.assertEqual(vlt.reveal_password(creds["github.com"]["id"]), "s3cret-pass")
+            self.assertEqual(vlt.reveal_password(creds["gmail.com"]["id"]), "other-pass")
+            self.assertEqual(vlt.reveal_notes(creds["github.com"]["id"]), "my note")
+            self.assertEqual(vlt.verify_integrity(), [])
+        finally:
+            vlt.lock()
+
+    def test_migration_records_the_new_version(self):
+        self._make_v1_vault()
+        vault.Vault.unlock(self.path, MASTER).lock()
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
+            self.assertIn("group_name", db.credential_columns(conn))
+
+    def test_existing_rows_land_ungrouped(self):
+        self._make_v1_vault()
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        try:
+            self.assertTrue(all(c["group_name"] == "" for c in vlt.list_credentials()))
+            self.assertEqual(vlt.list_groups(), [])
+        finally:
+            vlt.lock()
+
+    def test_migration_writes_a_recoverable_backup(self):
+        self._make_v1_vault()
+        backup_path = vault.pre_migration_backup_path(self.path, 1)
+        self.assertFalse(backup_path.exists())
+        vault.Vault.unlock(self.path, MASTER).lock()
+        self.assertTrue(backup_path.exists(), "no pre-migration backup was written")
+        # It must be the *old* schema, and a real openable vault.
+        conn = sqlite3.connect(str(backup_path))
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(credentials)")}
+            self.assertNotIn("group_name", cols)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM credentials").fetchone()[0], 2)
+        finally:
+            conn.close()
+
+    def test_migration_is_idempotent(self):
+        self._make_v1_vault()
+        for _ in range(3):
+            vault.Vault.unlock(self.path, MASTER).lock()
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM credentials").fetchone()[0], 2)
+
+    def test_already_current_vault_is_not_backed_up(self):
+        """A no-op upgrade must not litter a backup beside every vault."""
+        vault.create_vault(self.path, MASTER)
+        vault.Vault.unlock(self.path, MASTER).lock()
+        self.assertEqual(
+            list(Path(self.tmp.name).glob("*premigration*")), [],
+            "wrote a pre-migration backup for a vault that needed no migration")
+
+    def test_wrong_password_never_migrates(self):
+        """Migration runs only after the verifier passes."""
+        self._make_v1_vault()
+        with self.assertRaises(vault.InvalidMasterPasswordError):
+            vault.Vault.unlock(self.path, "definitely-not-the-master-password")
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), 1)
+            self.assertNotIn("group_name", db.credential_columns(conn))
+
+    def test_fresh_vault_is_created_at_the_current_version(self):
+        vault.create_vault(self.path, MASTER)
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
+            self.assertIn("group_name", db.credential_columns(conn))
+
+
+class CredentialGroupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "vault.db"
+        vault.create_vault(self.path, MASTER)
+        self.vault = vault.Vault.unlock(self.path, MASTER)
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.vault.lock)
+
+    def test_group_round_trips(self):
+        cid = self.vault.add_credential("steampowered.com", "ofek", "pw", group_name="Gaming")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["group_name"], "Gaming")
+
+    def test_group_is_optional(self):
+        cid = self.vault.add_credential("example.com", "u", "pw")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["group_name"], "")
+
+    def test_list_groups_is_deduplicated_and_sorted(self):
+        self.vault.add_credential("gmail.com", "a", "pw", group_name="Email")
+        self.vault.add_credential("outlook.com", "b", "pw", group_name="Email")
+        self.vault.add_credential("steampowered.com", "c", "pw", group_name="Gaming")
+        self.vault.add_credential("nogroup.com", "d", "pw")
+        self.assertEqual(self.vault.list_groups(), ["Email", "Gaming"])
+
+    def test_set_group_moves_and_clears(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", group_name="Work")
+        self.vault.set_group(cid, "Personal")
+        self.assertEqual(self.vault.list_groups(), ["Personal"])
+        self.vault.set_group(cid, "")
+        self.assertEqual(self.vault.list_groups(), [])
+
+    def test_update_credential_preserves_the_group_by_default(self):
+        """Guards against repeating the `notes=""` data-loss trap.
+
+        `update_credential` is a PUT: its notes default erases notes for any
+        caller that forgets them. The group deliberately defaults to None
+        (leave alone) instead, so editing MFA cannot silently ungroup an item.
+        """
+        cid = self.vault.add_credential("example.com", "u", "pw", group_name="Gaming")
+        self.vault.update_credential(cid, "example.com", "u", mfa_enabled=True)
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["group_name"], "Gaming")
+
+    def test_update_credential_can_clear_the_group_explicitly(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", group_name="Gaming")
+        self.vault.update_credential(cid, "example.com", "u", group_name="")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["group_name"], "")
+
+    def test_invalid_group_is_rejected(self):
+        for bad in ("'; DROP TABLE credentials;--", "-leading", "a" * 49, "café"):
+            with self.assertRaises(validation.ValidationError, msg=bad):
+                self.vault.add_credential(f"svc-{len(bad)}.com", "u", "pw", group_name=bad)
+
+    def test_group_is_trimmed_not_mangled(self):
+        cid = self.vault.add_credential("example.com", "u", "pw", group_name="  Gaming  ")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["group_name"], "Gaming")
+
+
+class GroupSuggestionTests(unittest.TestCase):
+    def test_known_services_are_recognised(self):
+        cases = {
+            "gmail.com": "Email", "mail.google.com": "Email",
+            "steampowered.com": "Gaming", "steamcommunity.com": "Gaming",
+            "store.steampowered.com": "Gaming",
+            "github.com": "Development", "paypal.com": "Banking & Finance",
+            "netflix.com": "Entertainment", "amazon.co.uk": "Shopping",
+            "reddit.com": "Social",
+        }
+        for service, expected in cases.items():
+            self.assertEqual(groups.suggest_group(service), expected, service)
+
+    def test_case_and_scheme_do_not_matter(self):
+        self.assertEqual(groups.suggest_group("HTTPS://GMail.COM/login"), "Email")
+
+    def test_unknown_service_suggests_nothing(self):
+        self.assertEqual(groups.suggest_group("some-internal-tool.local"), "")
+
+    def test_empty_input_is_safe(self):
+        for value in ("", "   ", None, 5):
+            self.assertEqual(groups.suggest_group(value), "")
+
+    def test_longest_hint_wins(self):
+        # "ea.com" must not hijack a longer, more specific match.
+        self.assertEqual(groups.suggest_group("battle.net"), "Gaming")
+
+    def test_suggestions_pass_their_own_validator(self):
+        """A suggested group the user cannot actually save would be a bug."""
+        for name in groups.SUGGESTED_GROUPS:
+            self.assertEqual(validation.validate_group_name(name), name)
+        for name in set(groups._HINTS.values()):
+            self.assertEqual(validation.validate_group_name(name), name)
+
+    def test_group_credentials_orders_named_then_ungrouped(self):
+        creds = [
+            {"id": 1, "group_name": "Work"},
+            {"id": 2, "group_name": ""},
+            {"id": 3, "group_name": "Email"},
+            {"id": 4, "group_name": "Work"},
+        ]
+        out = groups.group_credentials(creds)
+        self.assertEqual([label for label, _ in out], ["Email", "Work", "Ungrouped"])
+        self.assertEqual([c["id"] for c in dict(out)["Work"]], [1, 4])
+
+    def test_group_credentials_merges_case_variants(self):
+        creds = [{"id": 1, "group_name": "Gaming"}, {"id": 2, "group_name": "gaming"}]
+        out = groups.group_credentials(creds)
+        self.assertEqual(len(out), 1, out)
+        self.assertEqual(len(out[0][1]), 2)
+
+    def test_group_credentials_handles_missing_key(self):
+        # Rows read before the migration have no group_name at all.
+        out = groups.group_credentials([{"id": 1}])
+        self.assertEqual(out, [("Ungrouped", [{"id": 1}])])
+
+    def test_group_credentials_of_nothing_is_empty(self):
+        self.assertEqual(groups.group_credentials([]), [])
+
+    def test_choices_puts_suggestions_first_and_dedupes(self):
+        out = groups.choices(["Gaming", "gaming", "My Custom"])
+        self.assertEqual(out[:len(groups.SUGGESTED_GROUPS)], list(groups.SUGGESTED_GROUPS))
+        self.assertEqual(out.count("Gaming"), 1)
+        self.assertNotIn("gaming", out)
+        self.assertIn("My Custom", out)
 
 
 class VaultLifecycleTests(unittest.TestCase):

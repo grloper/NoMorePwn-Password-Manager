@@ -37,7 +37,7 @@ available separately and does take POSIX syntax.
 ## Commands
 
 ```
-python -m unittest discover tests -v      # 69 tests, ~3s — from repo root
+python -m unittest discover tests -v      # 149 tests, ~6s — from repo root
 cd extension; npm install; npm test       # 52 checks, ~22s — NOT `npm ci` (lockfile gitignored)
 python NoMorePwn.py                       # runs against the REAL vault (see above)
 pip install -r requirements-build.txt     # covers both test and build deps
@@ -110,6 +110,17 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
     must dispatch before the Qt-pulling `.app` import in both `NoMorePwn.py` and
     `nomorepwn_app/__main__.py`. Stray stdout corrupts the 4-byte-length frame stream; the only
     symptom is a dropped browser connection.
+16. **A migration never touches `uuid`, `password_enc`, or `notes_enc`** (`db.py` `_MIGRATIONS`).
+    AAD is bound to the row's uuid, so rewriting any of the three makes every secret permanently
+    undecryptable — and there is no rekey path in this repo. Adding a column is safe precisely
+    because it touches none of them. Migrations must also be **idempotent** (guard on
+    `credential_columns`), because they run on every unlock. Guarded by
+    `tests/test_core.py::SchemaMigrationTests::test_unlock_migrates_and_secrets_still_decrypt`,
+    which fails with `DecryptionError` the moment a migration rewrites a uuid.
+17. **`vault.migrate_schema` writes `<vault>.vN-premigration` before upgrading, and never deletes
+    it.** It is the only recovery path if a migration corrupts the file — the user's other copy is
+    an encrypted `.nmpbak` that needs this same app to open. Written with `db.snapshot_bytes`
+    (SQLite's online-backup API), not a file copy, so it is never a torn page.
 
 ## Traps
 
@@ -126,6 +137,13 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   overwritten. Every secret becomes permanently undecryptable, reported as "authentication failed".
 - `update_credential` is a **PUT, not a PATCH**. `notes=""` and `mfa_enabled=False` defaults erase
   notes and clear MFA, with no error and no history row. Read current values first.
+  `group_name` is the deliberate exception: it defaults to `None` meaning *leave unchanged*,
+  specifically so a new field would not repeat that data-loss trap. Pass `""` to clear it.
+- Group names are **plaintext**, like `service_name` and `username` beside them — filterable
+  metadata, not secrets. Do not put anything sensitive in a group label. Grouping/display logic is
+  a pure function (`groups.group_credentials`); the list view only renders what it returns.
+  Matching is case-insensitive there, while the `UNIQUE (service_name, username)` index and
+  `find_credential` remain case-**sensitive**.
 - Editor + failed notes decryption = **permanent data loss**: `editor.py:153-157` swallows the
   exception into `notes=""`, then Save writes NULL over the ciphertext.
 - `merge_from`'s `skipped` counter renders as "already present" but also absorbs decrypt and
@@ -138,8 +156,11 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
 - `validate_*` **returns** the cleaned value — reassign it. Identifiers are `.strip()`ed before the
   length check; passwords and notes deliberately are not. Adding `.strip()` to `validate_password`
   is a security bug. Allowlists are ASCII-only (`café.com`, `日本.com`, `_alice` all rejected).
-- `SCHEMA_VERSION` is write-only; `init_schema` only runs inside `create_vault`. Bumping it
-  migrates nothing. `delete_credential` is the one mutator with no existence check.
+- `SCHEMA_VERSION` is **no longer write-only** (it was until v2). `init_schema` still only runs
+  inside `create_vault`, so existing vaults are upgraded by `db.migrate`, which
+  `vault.migrate_schema` runs from `Vault.unlock` — *after* the verifier passes, so a wrong
+  password never migrates. Bumping the number without adding a `_MIGRATIONS` entry still migrates
+  nothing. `delete_credential` is the one mutator with no existence check.
 
 **Backups**
 - Any path replacing `vault.db` under a live `Vault` must call `backups.discard_pending()` **and**

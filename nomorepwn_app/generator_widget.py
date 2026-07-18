@@ -7,6 +7,7 @@ editor. All randomness comes from :mod:`nomorepwn.generator` (CSPRNG).
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSlider, QVBoxLayout, QWidget,
@@ -58,9 +59,14 @@ class GeneratorPanel(QWidget):
 
     generated = Signal(str)
     use_requested = Signal(str)
+    copied = Signal(str)      # emitted after the value reaches the clipboard
 
-    def __init__(self, show_use_button: bool = False, parent=None):
+    def __init__(self, show_use_button: bool = False, ctx=None, parent=None):
         super().__init__(parent)
+        # The panel owns its own Copy wiring. It used to be connected by the
+        # call site, which meant the standalone Generator page worked and the
+        # editor's inline panel shipped a dead button.
+        self._ctx = ctx
         p = theme.active()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -173,6 +179,7 @@ class GeneratorPanel(QWidget):
 
         # -- Wiring ----------------------------------------------------
         self.mode.changed.connect(self._on_mode)
+        self.copy_btn.clicked.connect(self._copy)
         self.regen_btn.clicked.connect(self.regenerate)
         self.length.valueChanged.connect(lambda v: (self.len_value.setText(str(v)), self.regenerate()))
         self.words.valueChanged.connect(lambda v: (self.words_value.setText(str(v)), self.regenerate()))
@@ -184,6 +191,21 @@ class GeneratorPanel(QWidget):
         self.regenerate()
 
     # ------------------------------------------------------------------
+
+    def _copy(self) -> None:
+        """Copy the current secret, with the same auto-wipe the vault uses.
+
+        Falls back to a plain clipboard write when the panel was built without
+        a context, so the button is never silently dead again.
+        """
+        secret = self.value()
+        if not secret:
+            return
+        if self._ctx is not None:
+            self._ctx.copy_secret(secret, "Password copied")
+        else:
+            QGuiApplication.clipboard().setText(secret)
+        self.copied.emit(secret)
 
     def _on_mode(self, idx: int) -> None:
         self.pw_box.setVisible(idx == 0)

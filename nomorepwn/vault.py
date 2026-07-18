@@ -104,6 +104,45 @@ def create_vault(db_path: str | Path, master_password: str) -> None:
         db.set_meta(conn, "created_at", _now_iso())
 
 
+def pre_migration_backup_path(db_path: str | Path, from_version: int) -> Path:
+    """Where the untouched copy is parked before a schema upgrade."""
+    path = Path(db_path)
+    return path.with_name(f"{path.name}.v{from_version}-premigration")
+
+
+def migrate_schema(db_path: str | Path) -> tuple[int, int]:
+    """Bring a vault's schema up to date, keeping a copy of the old file.
+
+    Returns ``(from_version, to_version)``; equal values mean nothing ran.
+
+    The backup is the whole point. A migration failing halfway through on a
+    password vault is unrecoverable — there is no rekey path in this repo, and
+    the user's only other copy may be an encrypted `.nmpbak` they need this
+    same app to open. So an untouched byte-for-byte copy is written *first*,
+    via SQLite's online-backup API rather than a file copy, and left in place.
+    """
+    path = Path(db_path)
+    with db.connect(path) as conn:
+        current = db.read_schema_version(conn)
+    if current >= db.SCHEMA_VERSION:
+        return current, current
+
+    backup_path = pre_migration_backup_path(path, current)
+    try:
+        if not backup_path.exists():
+            backup_path.write_bytes(db.snapshot_bytes(path))
+    except OSError as exc:
+        raise VaultError(
+            f"Could not write the pre-migration backup at {backup_path}: {exc}. "
+            "The vault was left untouched."
+        ) from exc
+
+    # db.connect rolls back on any exception, so a failure here leaves the
+    # schema exactly as it was — and the backup covers the rest.
+    with db.connect(path) as conn:
+        return db.migrate(conn)
+
+
 class Vault:
     """An unlocked vault. Construct via :meth:`Vault.unlock`."""
 
@@ -137,6 +176,9 @@ class Vault:
         )
         if not crypto.check_verifier(key, bytes.fromhex(verifier_hex)):
             raise InvalidMasterPasswordError("Master password is incorrect.")
+        # Only migrate a vault the caller has proved they can open, and only
+        # after the verifier passes — never on a wrong-password attempt.
+        migrate_schema(db_path)
         return cls(db_path, key)
 
     def lock(self) -> None:
@@ -160,11 +202,13 @@ class Vault:
         password: str,
         notes: str = "",
         mfa_enabled: bool = False,
+        group_name: str = "",
     ) -> int:
         service_name = validation.validate_service_name(service_name)
         username = validation.validate_username(username)
         password = validation.validate_password(password)
         notes = validation.validate_notes(notes)
+        group_name = validation.validate_group_name(group_name)
 
         cred_uuid = str(uuid_mod.uuid4())
         blob = crypto.encrypt(self._key, password.encode("utf-8"), _password_aad(cred_uuid))
@@ -191,6 +235,7 @@ class Vault:
                 notes_enc=notes_enc,
                 mfa_enabled=mfa_enabled,
                 now_iso=now,
+                group_name=group_name,
             )
             # Every version — including the first — gets a history row,
             # so the age metric and tamper sweep cover the whole lifetime.
@@ -230,6 +275,7 @@ class Vault:
         username: str,
         notes: str = "",
         mfa_enabled: bool = False,
+        group_name: str | None = None,
     ) -> None:
         """Edit a credential's metadata and notes (not its password).
 
@@ -237,6 +283,12 @@ class Vault:
         changes go through :meth:`update_password`; this handles the
         renamable/editable fields. Notes are re-encrypted under the row's
         existing UUID-bound AAD.
+
+        ``group_name=None`` means *leave the group as it is*, deliberately
+        unlike the ``notes=""`` default beside it: that default silently
+        erases notes on any caller that forgets to pass them, which is a
+        known data-loss trap in this codebase. A new field should not repeat
+        it. Pass ``""`` explicitly to clear the group.
         """
         service_name = validation.validate_service_name(service_name)
         username = validation.validate_username(username)
@@ -245,6 +297,10 @@ class Vault:
             row = db.get_credential(conn, cred_id)
             if row is None:
                 raise VaultError("Credential not found.")
+            if group_name is None:
+                group_name = row["group_name"] if "group_name" in row.keys() else ""
+            else:
+                group_name = validation.validate_group_name(group_name)
             existing = db.find_credential(conn, service_name, username)
             if existing is not None and existing["id"] != cred_id:
                 raise DuplicateCredentialError(
@@ -256,8 +312,27 @@ class Vault:
                 else None
             )
             db.update_credential_meta(
-                conn, cred_id, service_name, username, notes_enc, mfa_enabled, _now_iso()
+                conn, cred_id, service_name, username, notes_enc, mfa_enabled,
+                _now_iso(), group_name,
             )
+
+    def list_groups(self) -> list[str]:
+        """Group names currently in use, alphabetically. Never includes ""."""
+        with db.connect(self.db_path) as conn:
+            return db.list_group_names(conn)
+
+    def set_group(self, cred_id: int, group_name: str) -> str:
+        """Move one credential into a group ("" removes it from any group).
+
+        Returns the validated name actually stored, so callers can reflect
+        the trimmed value back into the UI.
+        """
+        group_name = validation.validate_group_name(group_name)
+        with db.connect(self.db_path) as conn:
+            if db.get_credential(conn, cred_id) is None:
+                raise VaultError("Credential not found.")
+            db.set_group_name(conn, cred_id, group_name, _now_iso())
+        return group_name
 
     def set_mfa(self, cred_id: int, enabled: bool) -> None:
         with db.connect(self.db_path) as conn:
@@ -480,6 +555,9 @@ class Vault:
             "id": row["id"],
             "service_name": row["service_name"],
             "username": row["username"],
+            # Defensive: a row read through a connection opened before the
+            # migration ran has no such column.
+            "group_name": (row["group_name"] if "group_name" in row.keys() else ""),
             "mfa_enabled": bool(row["mfa_enabled"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

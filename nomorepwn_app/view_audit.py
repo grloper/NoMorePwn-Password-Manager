@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import Q_ARG, QMetaObject, QRectF, Qt, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGridLayout, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
@@ -89,6 +89,8 @@ class AuditView(QWidget):
         self._ctx = ctx
         self._vault: vault.Vault | None = None
         self._report: dict | None = None
+        # Bumped per scan so a stale worker can't clobber a newer one's results.
+        self._scan_seq = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -284,40 +286,82 @@ class AuditView(QWidget):
         return card
 
     def _scan_breaches(self) -> None:
-        if self._vault is None or self._report is None:
+        if self._vault is None:
             return
         vlt = self._vault
         creds = vlt.list_credentials()
+        if not creds:
+            self._ctx.toast.show("Nothing to scan yet.", "info")
+            return
+
         self.breach_btn.setEnabled(False)
-        self.breach_btn.setText("Scanning…")
+        self._scan_seq += 1
+        seq = self._scan_seq
 
         def work():
-            breached = []
+            by_password: dict[str, list[dict]] = {}
+            unreadable = 0
             for c in creds:
                 try:
-                    count = leakcheck.check_password(vlt.reveal_password(c["id"]))
+                    by_password.setdefault(vlt.reveal_password(c["id"]), []).append(c)
                 except Exception:
-                    continue
-                if count:
+                    unreadable += 1
+
+            def report(done_count: int, total: int) -> None:
+                QMetaObject.invokeMethod(
+                    self, "_scan_progress", Qt.QueuedConnection,
+                    Q_ARG(int, done_count), Q_ARG(int, total))
+
+            outcome = leakcheck.check_many(by_password, on_progress=report)
+
+            breached: list[dict] = []
+            for pw, count in outcome.breached.items():
+                for c in by_password[pw]:
                     c = dict(c)
                     c["_breach_count"] = count
                     breached.append(c)
-            return breached
 
-        def done(breached):
-            self.breach_btn.setEnabled(True)
-            self.breach_btn.setText("Scan all for breaches")
+            # A password we couldn't check is not a password we cleared.
+            failed = sum(len(by_password[pw]) for pw in outcome.failed) + unreadable
+            return {"breached": breached, "failed": failed,
+                    "checked": len(creds) - failed}
+
+        def done(result):
+            self._reset_scan_button()
+            if seq != self._scan_seq or self._vault is None:
+                return  # superseded, or the vault locked while we scanned
+
             if self._report is not None:
-                self._report["breached"] = breached
+                self._report["breached"] = result["breached"]
                 self._render_report(self._report)
-            n = len(breached)
-            self._ctx.toast.show(
-                f"{n} breached password{'s' if n != 1 else ''} found" if n else "No breached passwords found",
-                "error" if n else "success", 3200)
+
+            n = len(result["breached"])
+            failed = result["failed"]
+            if failed and not result["checked"]:
+                self._ctx.toast.show(
+                    "Couldn't reach the breach service — nothing was checked.", "error", 4000)
+            elif failed:
+                self._ctx.toast.show(
+                    f"Checked {result['checked']} of {len(creds)} — "
+                    f"{n} breached, {failed} couldn't be checked.", "error", 4600)
+            else:
+                self._ctx.toast.show(
+                    f"{n} breached password{'s' if n != 1 else ''} found" if n
+                    else "No breached passwords found",
+                    "error" if n else "success", 3200)
 
         def err(exc):
-            self.breach_btn.setEnabled(True)
-            self.breach_btn.setText("Scan all for breaches")
-            self._ctx.toast.show("Breach scan failed (offline?)", "error")
+            self._reset_scan_button()
+            if seq == self._scan_seq:
+                self._ctx.toast.show("Breach scan failed (offline?)", "error")
 
+        self.breach_btn.setText("Scanning… 0/—")
         workers.run_async(work, done, err)
+
+    def _reset_scan_button(self) -> None:
+        self.breach_btn.setEnabled(True)
+        self.breach_btn.setText("Scan all for breaches")
+
+    @Slot(int, int)
+    def _scan_progress(self, done_count: int, total: int) -> None:
+        self.breach_btn.setText(f"Scanning… {done_count}/{total}")

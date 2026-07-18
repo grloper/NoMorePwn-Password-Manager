@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nomorepwn import backup, crypto, generator, strength, validation, vault
+from nomorepwn import backup, crypto, generator, leakcheck, strength, validation, vault
 from nomorepwn import db as db_layer
 
 MASTER = "correct horse battery staple 42"
@@ -406,6 +406,133 @@ class StrengthTests(unittest.TestCase):
         weak = strength._evaluate_entropy("abc")
         strong = strength._evaluate_entropy("kJ8#mQ2$vN9pL5xW7z!fR3")
         self.assertLess(weak.score, strong.score)
+
+
+class BulkLeakScanTests(unittest.TestCase):
+    """A password that could not be checked must never read as 'clean'.
+
+    This is the regression guard for the bulk scan reporting "No breached
+    passwords found" when every HIBP request had actually failed.
+    """
+
+    def setUp(self):
+        self._real_check = leakcheck.check_password
+        self.calls = []
+
+    def tearDown(self):
+        leakcheck.check_password = self._real_check
+
+    def _stub(self, behaviour):
+        def fake(password, timeout=leakcheck.DEFAULT_TIMEOUT):
+            self.calls.append(password)
+            result = behaviour(password)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        leakcheck.check_password = fake
+
+    def _scan(self, passwords):
+        return leakcheck.check_many(passwords, delay=0, _sleep=lambda _s: None)
+
+    def test_failures_are_not_reported_as_clean(self):
+        self._stub(lambda pw: leakcheck.LeakCheckError("offline"))
+        outcome = self._scan(["a", "b"])
+        self.assertEqual(outcome.counts, {})
+        self.assertEqual(outcome.failed, {"a", "b"})
+        self.assertEqual(outcome.breached, {})
+        self.assertFalse(outcome.complete)
+
+    def test_clean_passwords_are_distinguishable_from_failures(self):
+        self._stub(lambda pw: 0 if pw == "clean" else leakcheck.LeakCheckError("nope"))
+        outcome = self._scan(["clean", "broken"])
+        self.assertEqual(outcome.counts, {"clean": 0})
+        self.assertEqual(outcome.failed, {"broken"})
+        self.assertTrue(outcome.complete is False)
+
+    def test_breached_counts_are_surfaced(self):
+        self._stub(lambda pw: 42 if pw == "hunter2" else 0)
+        outcome = self._scan(["hunter2", "safe"])
+        self.assertEqual(outcome.breached, {"hunter2": 42})
+        self.assertTrue(outcome.complete)
+
+    def test_duplicates_are_checked_once(self):
+        self._stub(lambda pw: 0)
+        outcome = self._scan(["same", "same", "same", "other"])
+        self.assertEqual(self.calls, ["same", "other"])
+        self.assertEqual(set(outcome.counts), {"same", "other"})
+
+    def test_progress_reports_deduplicated_total(self):
+        self._stub(lambda pw: 0)
+        seen = []
+        leakcheck.check_many(
+            ["x", "x", "y"], delay=0, _sleep=lambda _s: None,
+            on_progress=lambda done, total: seen.append((done, total)))
+        self.assertEqual(seen, [(1, 2), (2, 2)])
+
+    def test_partial_failure_keeps_both_halves(self):
+        self._stub(lambda pw: 7 if pw == "leaked" else leakcheck.LeakCheckError("x"))
+        outcome = self._scan(["leaked", "unknown"])
+        self.assertEqual(outcome.breached, {"leaked": 7})
+        self.assertEqual(outcome.failed, {"unknown"})
+
+
+class LeakCheckRetryTests(unittest.TestCase):
+    """HIBP answers bulk callers with 429; we honour Retry-After."""
+
+    class _Response:
+        def __init__(self, status, text="", retry_after=None):
+            self.status_code = status
+            self.text = text
+            self.headers = {} if retry_after is None else {"Retry-After": retry_after}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(f"{self.status_code}")
+
+    def setUp(self):
+        import requests
+        self._real_get = requests.get
+        self._real_sleep = leakcheck.time.sleep
+        self.slept = []
+        leakcheck.time.sleep = lambda s: self.slept.append(s)
+
+    def tearDown(self):
+        import requests
+        requests.get = self._real_get
+        leakcheck.time.sleep = self._real_sleep
+
+    def _serve(self, responses):
+        import requests
+        queue = list(responses)
+        requests.get = lambda *a, **kw: queue.pop(0)
+
+    def test_retries_after_429_then_succeeds(self):
+        import hashlib
+        sha1 = hashlib.sha1(b"pw").hexdigest().upper()
+        body = f"{sha1[5:]}:9"
+        self._serve([
+            self._Response(429, retry_after="0.25"),
+            self._Response(200, body),
+        ])
+        self.assertEqual(leakcheck.check_password("pw"), 9)
+        self.assertEqual(self.slept, [0.25])
+
+    def test_gives_up_after_max_retries(self):
+        self._serve([self._Response(429) for _ in range(leakcheck.MAX_RETRIES)])
+        with self.assertRaises(leakcheck.LeakCheckError):
+            leakcheck.check_password("pw")
+
+    def test_absurd_retry_after_is_capped(self):
+        import hashlib
+        sha1 = hashlib.sha1(b"pw").hexdigest().upper()
+        self._serve([
+            self._Response(429, retry_after="99999"),
+            self._Response(200, f"{sha1[5:]}:1"),
+        ])
+        leakcheck.check_password("pw")
+        self.assertTrue(all(s <= 8.0 for s in self.slept), self.slept)
 
 
 if __name__ == "__main__":

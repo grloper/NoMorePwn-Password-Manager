@@ -15,6 +15,7 @@
 
 import { MSG, OUTCOME } from '../shared/messages.js';
 import * as store from './pending-store.js';
+import * as bridge from './bridge.js';
 import { SUCCESS_THRESHOLD, scoreResponse, scoreNavigation } from './verifier.js';
 
 /* ------------------------------------------------------------------ */
@@ -32,10 +33,22 @@ function verify(tabId, outcome) {
 
   entry.holder
     .reveal(async (credential) => {
-      // TODO(save-prompt): open the save UI and hand `credential` to the vault.
-      // Deliberately not logging the credential itself.
       console.log('Login verified for URL: ' + targetUrl);
       console.debug('[nmp] outcome=%s user=%s evidence=%o', outcome, credential.username, entry.evidence);
+
+      // TODO(save-prompt): show the save UI, then hand the credential over.
+      // The host currently answers `not-implemented` — it is a separate
+      // process from the running app and cannot reach the unlocked vault.
+      // See nomorepwn_app/native_host.py.
+      const saved = await bridge.send({
+        type: 'save-credential',
+        targetUrl,
+        username: credential.username,
+        password: credential.password,
+      });
+      if (!saved.ok || saved.data?.type === 'error') {
+        console.debug('[nmp] not saved: %s', saved.ok ? saved.data.code : saved.error);
+      }
     })
     .catch((err) => console.warn('[nmp] reveal failed', err))
     .finally(() => entry.holder.wipe());
@@ -136,3 +149,10 @@ chrome.tabs.onRemoved.addListener((tabId) => reject(tabId, OUTCOME.TAB_GONE));
 chrome.runtime.onSuspend?.addListener(() => store.discardAll(OUTCOME.TIMED_OUT));
 
 console.debug('[nmp] verified authentication observer registered');
+
+// Report bridge reachability once at startup. A missing host is the expected
+// state until the user runs Settings -> Browser extension -> Set up.
+bridge.ping().then((r) => {
+  if (r.connected) console.log(`[nmp] connected to NoMorePwn ${r.version} (vault present: ${r.vaultPresent})`);
+  else console.log('[nmp] desktop app not reachable — run Settings → Browser extension → Set up. ' + (r.error ?? ''));
+});

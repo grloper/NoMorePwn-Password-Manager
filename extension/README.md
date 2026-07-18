@@ -129,25 +129,52 @@ MV3 extensions. If review friction becomes a problem, dropping the
 
 ## Running it
 
-Load unpacked: `chrome://extensions` → Developer mode → Load unpacked →
-select this `extension/` directory. Watch the worker's console via
-*Inspect views: service worker*.
+1. In NoMorePwn: **Settings → Browser extension → Set up browser extension…**
+   This writes the native-messaging host manifest and registers it under HKCU
+   for Chrome, Edge, and Brave. No admin rights needed.
+2. In the browser: `chrome://extensions` → Developer mode → **Load unpacked** →
+   select this `extension/` directory.
+
+Watch the worker's console via *Inspect views: service worker*; it logs whether
+the desktop app is reachable at startup.
+
+The extension ID is pinned to `cjgphedkabfdfbhkfleagmanmmhlolkl` by the `key`
+field in `manifest.json`. That matters: an unpacked extension's ID is otherwise
+derived from its install path, so it would differ per machine — and the host
+manifest's `allowed_origins` has to name the exact ID. Pinning is what lets the
+app register the bridge without you copying an ID by hand. Change that key and
+`EXTENSION_ID` in `nomorepwn_app/browser_bridge.py` must change with it.
 
 ```bash
 cd extension
 npm install
-npm test     # 42 assertions: holder contract, scoring, SW integration, DOM observer
+npm test     # 52 assertions
 ```
 
-The tests run the real background modules against a fake `chrome.*` event bus,
-and the real MutationObserver against jsdom — including that it coalesces 500
-mutations into ≤3 evaluations, disconnects on settle, and honours the 10s
-deadline.
+The tests run the real background modules against a fake `chrome.*` event bus
+and a fake native host, and the real MutationObserver against jsdom —
+including that it coalesces 500 mutations into ≤3 evaluations, disconnects on
+settle, and honours the 10s deadline.
 
 ## Not done yet
 
-- The save prompt and the bridge to the desktop vault (`TODO(save-prompt)`).
-  The vault is a local PySide6 app, so this needs native messaging — a design
-  question of its own, and the reason it isn't stubbed in here.
+**The save path stops at the host.** `bridge.js` sends `save-credential` and
+the host answers `not-implemented`. That is a real architectural gap, not a
+missing function body:
+
+> The browser *spawns* the native host. That process is **not** the running
+> desktop app, and the master key lives only in the running app's RAM. A
+> freshly spawned host can see that a vault file exists; it cannot open it.
+
+Closing it needs either host → app IPC over a local named pipe (better — the
+key stays in one process, and the app can show the save prompt), or the host
+prompting for the master password itself (a second place handling master
+passwords). Also unresolved: what should happen when a verified login arrives
+while the vault is **locked** — queue it (holds the secret far longer than 5
+seconds, against the whole design), prompt to unlock, or drop it.
+
+Other gaps:
+
 - Password-change and 2FA-step detection (both look like a login submit today).
+- CI does not run `npm test`, so the extension can break without anyone noticing.
 - Firefox: `browser.*` polyfill and MV3 differences are untested.

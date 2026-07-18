@@ -141,12 +141,29 @@ section('3. Background service worker integration');
   };
   const fire = (name, ...args) => bus[name].map((fn) => fn(...args));
 
+  // Fake native host: records what the extension tried to send it.
+  const native = { sent: [], reply: { type: 'pong', protocol: 1, version: '1.0.0', vaultPresent: true }, fail: null };
+
   globalThis.chrome = {
-    runtime: { onMessage: evt('onMessage'), onSuspend: evt('onSuspend'), lastError: null },
+    runtime: {
+      onMessage: evt('onMessage'),
+      onSuspend: evt('onSuspend'),
+      lastError: null,
+      sendNativeMessage: (host, message, cb) => {
+        native.sent.push({ host, message });
+        chrome.runtime.lastError = native.fail ? { message: native.fail } : null;
+        const reply = native.fail ? undefined : native.reply;
+        setTimeout(() => {
+          cb(reply);
+          chrome.runtime.lastError = null;
+        }, 0);
+      },
+    },
     webRequest: { onHeadersReceived: evt('onHeadersReceived'), onErrorOccurred: evt('onErrorOccurred') },
     webNavigation: { onCommitted: evt('onCommitted') },
     tabs: { onRemoved: evt('onRemoved') },
   };
+  globalThis.__native = native;
 
   // ---- spy on wipe() so we can prove it fires on every path ---------
   const { SecureCredentialHolder } = await mod('shared/secure-credential.js');
@@ -244,12 +261,51 @@ section('3. Background service worker integration');
   check('timeout wipes the credential', !store.has(7), `size=${store.size()}`);
   check('wipe() fired on the TIMEOUT path', wipes >= 1, `wipes=${wipes}`);
 
+  // --- the verified path reaches the native host ---
+  native.sent.length = 0;
+  native.reply = { type: 'error', code: 'not-implemented' };
+  await submit(8);
+  fire('onCommitted', { tabId: 8, frameId: 0, url: 'https://app.example.com/dashboard', transitionQualifiers: ['server_redirect'] });
+  await settle();
+  const saveAttempt = native.sent.find((s) => s.message?.type === 'save-credential');
+  check('verified login calls the native host', !!saveAttempt, JSON.stringify(native.sent));
+  check('native host is addressed by name', saveAttempt?.host === 'com.nomorepwn.bridge', saveAttempt?.host);
+  check('credential reaches the host intact', saveAttempt?.message?.password === 'pw' && saveAttempt?.message?.username === 'ofek');
+  check('holder still wiped after a host refusal', !store.has(8));
+
   store.discardAll('cleanup');
   SecureCredentialHolder.prototype.wipe = realWipe;
 }
 
 /* ================================================================== */
-section('4. SPA MutationObserver (jsdom)');
+section('4. Native-messaging bridge');
+/* ================================================================== */
+{
+  const bridge = await mod('background/bridge.js');
+  const native = globalThis.__native;
+
+  native.fail = null;
+  native.reply = { type: 'pong', protocol: 1, version: '1.0.0', vaultPresent: true };
+  const good = await bridge.ping();
+  check('ping() reports connected', good.connected === true, JSON.stringify(good));
+  check('ping() surfaces the app version', good.version === '1.0.0');
+  check('ping() surfaces vault presence', good.vaultPresent === true);
+
+  native.fail = 'Specified native messaging host not found.';
+  const missing = await bridge.ping();
+  check('a missing host resolves rather than throwing', missing.connected === false, JSON.stringify(missing));
+  check('the host error is surfaced', /not found/.test(missing.error ?? ''), missing.error);
+
+  native.fail = null;
+  native.reply = { type: 'something-else' };
+  const confused = await bridge.ping();
+  check('an unexpected reply is not treated as connected', confused.connected === false, JSON.stringify(confused));
+
+  native.reply = { type: 'pong', protocol: 1, version: '1.0.0', vaultPresent: false };
+}
+
+/* ================================================================== */
+section('5. SPA MutationObserver (jsdom)');
 /* ================================================================== */
 {
   const observerSrc = readFileSync(new URL('content/spa-observer.js', SRC), 'utf8');

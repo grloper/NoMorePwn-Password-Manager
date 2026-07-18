@@ -32,3 +32,7 @@ venv/
 # Browser extension (Node dev tooling only; the extension itself ships as source)
 node_modules/
 package-lock.json
+
+# The extension's signing key. The PUBLIC half lives in manifest.json ("key")
+# and pins the extension ID; this private half is only needed to pack a .crx.
+extension/.keys/

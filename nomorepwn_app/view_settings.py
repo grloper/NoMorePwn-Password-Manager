@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QScrollArea,
     QVBoxLayout, QWidget,
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
 from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 
-from . import __version__, components, theme
+from . import __version__, browser_bridge, components, theme
 from .components import Card
 from .context import AppContext
 from .dialogs import ask_new_passphrase, confirm
@@ -164,6 +165,46 @@ class SettingsView(QWidget):
         backup_card.body.addLayout(actions)
         lay.addWidget(backup_card)
 
+        # -- Browser extension -----------------------------------------
+        ext_card = Card()
+        ext_card.add(components.heading("Browser extension", "H3"))
+        ext_card.add(components.muted(
+            "Save logins straight from your browser. The extension only offers to "
+            "save a password once it has confirmed the login actually worked, so "
+            "you don't end up storing the typo you just fixed. It talks to this app "
+            "directly on your machine — nothing is sent anywhere."))
+
+        self.ext_status = QLabel("")
+        self.ext_status.setWordWrap(True)
+        ext_card.add(self.ext_status)
+
+        self.ext_setup_btn = components.button("Set up browser extension…", "globe")
+        self.ext_setup_btn.clicked.connect(self._setup_extension)
+        ext_card.add(_Setting(
+            "Connection",
+            "Registers NoMorePwn with Chrome, Edge, and Brave so the extension can reach it.",
+            self.ext_setup_btn))
+
+        self.ext_steps = QLabel("")
+        self.ext_steps.setObjectName("Faint")
+        self.ext_steps.setWordWrap(True)
+        self.ext_steps.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        ext_card.add(self.ext_steps)
+
+        ext_actions = QHBoxLayout()
+        self.ext_folder_btn = components.button("Open extension folder", "external")
+        self.ext_folder_btn.clicked.connect(self._open_extension_folder)
+        self.ext_copy_btn = components.button("Copy folder path", "copy")
+        self.ext_copy_btn.clicked.connect(self._copy_extension_path)
+        self.ext_remove_btn = components.button("Disconnect", "x")
+        self.ext_remove_btn.clicked.connect(self._remove_extension)
+        ext_actions.addWidget(self.ext_folder_btn)
+        ext_actions.addWidget(self.ext_copy_btn)
+        ext_actions.addWidget(self.ext_remove_btn)
+        ext_actions.addStretch(1)
+        ext_card.body.addLayout(ext_actions)
+        lay.addWidget(ext_card)
+
         # -- Appearance ------------------------------------------------
         appear = Card()
         appear.add(components.heading("Appearance", "H3"))
@@ -216,6 +257,7 @@ class SettingsView(QWidget):
         self.backup_keep.setCurrentIndex(max(0, self.backup_keep.findData(s.backup_keep)))
         self._loading = False
         self._refresh_backup_info()
+        self._refresh_extension_info()
 
     # -- backups --------------------------------------------------------
 
@@ -297,6 +339,77 @@ class SettingsView(QWidget):
         self._ctx.toast.show("Backup passphrase set", "success")
         self._refresh_backup_info()
         self._ctx.backup_now()
+
+    # -- browser extension ----------------------------------------------
+
+    def _refresh_extension_info(self) -> None:
+        p = theme.active()
+        st = browser_bridge.status()
+
+        if not st.supported:
+            self.ext_status.setText(st.detail)
+            self.ext_status.setStyleSheet(f"color:{p.text_muted};")
+            for b in (self.ext_setup_btn, self.ext_folder_btn,
+                      self.ext_copy_btn, self.ext_remove_btn):
+                b.setEnabled(False)
+            self.ext_steps.setText("")
+            return
+
+        missing = not st.extension_dir.exists()
+        self.ext_setup_btn.setEnabled(not missing)
+        self.ext_folder_btn.setEnabled(not missing)
+        self.ext_copy_btn.setEnabled(not missing)
+        self.ext_remove_btn.setEnabled(st.is_registered)
+
+        if missing:
+            self.ext_status.setText(f"⚠  {st.detail}")
+            self.ext_status.setStyleSheet(f"color:{p.danger};")
+        elif st.is_registered:
+            self.ext_status.setText(f"✓  Connected to {', '.join(st.registered)}")
+            self.ext_status.setStyleSheet(f"color:{p.success}; font-weight:600;")
+            self.ext_setup_btn.setText("Re-run setup")
+        else:
+            self.ext_status.setText("Not set up yet.")
+            self.ext_status.setStyleSheet(f"color:{p.text_muted};")
+            self.ext_setup_btn.setText("Set up browser extension…")
+
+        # Loading unpacked is a browser-side action we can't perform for the
+        # user, so spell it out rather than leaving them guessing.
+        self.ext_steps.setText(
+            "Then, in your browser: open chrome://extensions, turn on "
+            "Developer mode, click “Load unpacked”, and choose:\n"
+            f"{st.extension_dir}")
+
+    def _setup_extension(self) -> None:
+        done = browser_bridge.register()
+        self._refresh_extension_info()
+        if done:
+            self._ctx.toast.show(f"Registered with {', '.join(done)}", "success", 3200)
+        else:
+            self._ctx.toast.show(
+                "Couldn't register the bridge — no supported browser found.", "error", 4000)
+
+    def _remove_extension(self) -> None:
+        if not confirm(self, "Disconnect the browser extension?",
+                       "The extension will no longer be able to reach your vault. "
+                       "It stays installed in your browser until you remove it there.",
+                       confirm_text="Disconnect", danger=True):
+            return
+        browser_bridge.unregister()
+        self._refresh_extension_info()
+        self._ctx.toast.show("Browser extension disconnected", "success")
+
+    def _open_extension_folder(self) -> None:
+        path = browser_bridge.extension_dir()
+        if not path.exists():
+            self._ctx.toast.show("Extension folder is missing.", "error")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _copy_extension_path(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(str(browser_bridge.extension_dir()))
+        self._ctx.toast.show("Folder path copied", "success")
 
     def _save(self) -> None:
         if self._loading:

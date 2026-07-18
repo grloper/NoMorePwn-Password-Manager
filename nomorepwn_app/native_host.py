@@ -83,11 +83,18 @@ def _send(stream, message: dict) -> None:
 
 
 def _vault_present() -> bool:
-    try:
-        from nomorepwn import vault
+    """Whether a vault file exists — NOT whether it can be opened.
 
-        return vault.vault_exists(config.VAULT_PATH)
-    except Exception:
+    Only OSError is tolerated (an unreadable data directory). A broad
+    ``except Exception`` here would turn a typo like ``config.VAULT_PATH``
+    into a permanent, silent "no vault" — which is exactly how it read
+    before this was narrowed.
+    """
+    from nomorepwn import vault
+
+    try:
+        return vault.vault_exists(config.DB_PATH)
+    except OSError:
         return False
 
 

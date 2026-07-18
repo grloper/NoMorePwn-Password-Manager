@@ -6,6 +6,7 @@ Run with:  python -m unittest discover tests -v
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import sys
@@ -16,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nomorepwn import backup, crypto, generator, leakcheck, strength, validation, vault
+from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
 
 MASTER = "correct horse battery staple 42"
@@ -475,6 +477,74 @@ class BulkLeakScanTests(unittest.TestCase):
         outcome = self._scan(["leaked", "unknown"])
         self.assertEqual(outcome.breached, {"leaked": 7})
         self.assertEqual(outcome.failed, {"unknown"})
+
+
+class NativeHostTests(unittest.TestCase):
+    """The browser-facing host process: framing and status reporting.
+
+    ``vaultPresent`` is asserted in BOTH directions on purpose. Asserting only
+    the False case passes even when the check is permanently broken — which is
+    how a ``config.VAULT_PATH`` typo (the attribute is ``DB_PATH``) survived,
+    swallowed by an over-broad except.
+    """
+
+    def setUp(self):
+        from nomorepwn_app import native_host
+
+        self.host = native_host
+        self.tmp = tempfile.mkdtemp()
+        self._real_db_path = config_module.DB_PATH
+        config_module.DB_PATH = Path(self.tmp) / "vault.db"
+
+    def tearDown(self):
+        config_module.DB_PATH = self._real_db_path
+
+    def test_reports_absent_vault(self):
+        self.assertFalse(self.host._vault_present())
+
+    def test_reports_present_vault(self):
+        vault.create_vault(config_module.DB_PATH, MASTER)
+        self.assertTrue(self.host._vault_present())
+
+    def test_ping_reports_identity_and_protocol(self):
+        reply = self.host._handle({"type": "ping"})
+        self.assertEqual(reply["type"], "pong")
+        self.assertEqual(reply["app"], "NoMorePwn")
+        self.assertEqual(reply["protocol"], self.host.PROTOCOL_VERSION)
+
+    def test_ping_reflects_a_real_vault(self):
+        self.assertFalse(self.host._handle({"type": "ping"})["vaultPresent"])
+        vault.create_vault(config_module.DB_PATH, MASTER)
+        self.assertTrue(self.host._handle({"type": "ping"})["vaultPresent"])
+
+    def test_save_is_refused_not_silently_dropped(self):
+        reply = self.host._handle({"type": "save-credential", "password": "s3cret"})
+        self.assertEqual(reply["type"], "error")
+        self.assertEqual(reply["code"], "not-implemented")
+        self.assertNotIn("s3cret", json.dumps(reply))
+
+    def test_unknown_type_is_an_error(self):
+        self.assertEqual(self.host._handle({"type": "nope"})["code"], "unknown-type")
+
+    def test_frames_roundtrip(self):
+        import io
+        import struct
+
+        buf = io.BytesIO()
+        self.host._send(buf, {"type": "ping"})
+        buf.seek(0)
+        self.assertEqual(self.host._read(buf), {"type": "ping"})
+
+        # A truncated frame must read as end-of-stream, not raise.
+        self.assertIsNone(self.host._read(io.BytesIO(struct.pack("<I", 99) + b"{}")))
+        self.assertIsNone(self.host._read(io.BytesIO(b"")))
+
+    def test_oversized_frame_is_rejected(self):
+        import io
+        import struct
+
+        too_big = struct.pack("<I", self.host.MAX_MESSAGE_BYTES + 1)
+        self.assertIsNone(self.host._read(io.BytesIO(too_big + b"x")))
 
 
 class LeakCheckRetryTests(unittest.TestCase):

@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m unittest discover tests:*)",
+      "Bash(python -m unittest tests.test_core:*)",
+      "Bash(python -m unittest tests.test_views:*)",
+      "Bash(npm test:*)",
+      "Bash(npm ls:*)",
+      "Bash(node extension/tests/observer.test.mjs:*)",
+      "Bash(python -c:*)",
+      "Bash(python --version)",
+      "Bash(node --version)",
+      "Bash(python -m pip list:*)",
+      "Bash(pip show:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)"
+    ]
+  },
+
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 180,
+            "command": "bash -c 'cd \"$CLAUDE_PROJECT_DIR\" || exit 0; changed=$(git status --porcelain); [ -z \"$changed\" ] && exit 0; fail=\"\"; if echo \"$changed\" | grep -qE \"\\.py$\"; then python -m unittest discover tests >/dev/null 2>&1 || fail=\"python\"; fi; if echo \"$changed\" | grep -qE \"^.. ?extension/\"; then (cd extension && npm test >/dev/null 2>&1) || fail=\"$fail extension\"; fi; [ -n \"$fail\" ] && echo \"FAILING TEST SUITE(S):$fail — CI only runs the python suite, so a red extension suite ships silently. Run it and fix before finishing.\" >&2 && exit 2; exit 0'"
+          }
+        ]
+      }
+    ],
+
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 20,
+            "command": "bash -c 'f=$(python -c \"import json,sys; print(json.load(sys.stdin).get(\\\"tool_input\\\",{}).get(\\\"file_path\\\",\\\"\\\"))\" 2>/dev/null); case \"$f\" in *native_host.py|*__main__.py|*NoMorePwn.py) grep -nE \"^[[:space:]]*print\\(|^[[:space:]]*sys\\.stdout\\.write\\(\" \"$f\" >/dev/null 2>&1 && echo \"WARNING: $f is on the --native-host stdio path. Any stdout write outside _send() corrupts the 4-byte-length frame protocol; the only symptom is a dropped browser connection. Use stderr.\" >&2;; esac; exit 0'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -35,7 +35,7 @@ excludes = [
     "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtRemoteObjects",
     "PySide6.QtScxml", "PySide6.QtStateMachine", "PySide6.QtTextToSpeech",
     "PySide6.QtSpatialAudio",
-    "matplotlib", "numpy", "scipy", "pandas", "PIL", "streamlit",
+    "matplotlib", "numpy", "scipy", "pandas", "PIL",
 ]
 
 a = Analysis(

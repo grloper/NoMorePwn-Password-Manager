@@ -7,8 +7,7 @@ Responsibilities:
 * launch-time integrity sweep (tamper evidence)
 
 The master key is held only in memory on this object. Callers decide
-its lifetime (the Streamlit app keeps it in session state and drops it
-on "Lock").
+its lifetime (the desktop app holds it until Lock, auto-lock, or exit).
 """
 
 from __future__ import annotations
@@ -140,7 +139,7 @@ class Vault:
     @property
     def session_key(self) -> bytes:
         """The in-memory master key, for callers that own its lifetime
-        (the Streamlit app keeps it in session state until Lock)."""
+        (the desktop app holds it until the vault is locked)."""
         return self._key
 
     # ------------------------------------------------------------------

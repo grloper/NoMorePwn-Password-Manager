@@ -1,7 +1,7 @@
 # NoMorePwn — Architecture & Security Model
 
 A local-first credential vault and security auditor. One SQLite file,
-one Streamlit dashboard, zero required network access.
+one native desktop app, zero required network access.
 
 ## 1. Design principles
 
@@ -21,8 +21,8 @@ one Streamlit dashboard, zero required network access.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  app.py (Streamlit UI)          scripts/ (CLI: init/import/ │
-│  master key in session memory    backup — getpass, no echo) │
+│  nomorepwn_app/ (PySide6 desktop app)   scripts/ (import /  │
+│  tray · auto-lock · master key in RAM    backup — getpass)  │
 └───────────────┬─────────────────────────────┬───────────────┘
                 ▼                             ▼
         ┌──────────────────────────────────────────┐
@@ -96,7 +96,7 @@ detail; GCM provides the cryptographic guarantee. What tamper evidence
 cannot prevent is deletion — if rows vanish, layer 2 reports missing
 history rather than proving what was there.
 
-The `changed_at` chain also powers the dashboard's **"unchanged for N
+The `changed_at` chain also powers the app's **"unchanged for N
 days"** metric and the stale-password audit (warn at 180 days).
 
 ## 5. SQL injection defense (three rings)
@@ -110,8 +110,8 @@ days"** metric and the stale-password audit (warn at 180 days).
    creep in.
 2. **Strict input validation** (`validation.py`): allowlist regexes and
    hard length caps for service names (64) and usernames (128), applied
-   server-side before any DB call; Streamlit `max_chars` mirrors them
-   client-side. Passwords deliberately allow any printable character
+   server-side before any DB call; the editor's field length caps mirror
+   them client-side. Passwords deliberately allow any printable character
    (restricting them would weaken security) — they're inert data thanks
    to ring 1, and length-capped at 1024.
 3. **Encrypted-at-rest payloads.** Passwords/notes reach SQLite as
@@ -176,11 +176,10 @@ multi-user concurrency.
 
 ## 9. Desktop app & background service
 
-The primary interface is a native **PySide6 (Qt)** desktop app
-(`nomorepwn_app/`) that packages into a single `NoMorePwn.exe`. It reuses
-the `nomorepwn` core unchanged — the security model above is identical;
-only the presentation layer is new. (A legacy Streamlit dashboard,
-`app.py`, still works but is optional.)
+The only interface is a native **PySide6 (Qt)** desktop app
+(`nomorepwn_app/`) that packages into a single `NoMorePwn.exe`. It builds
+on the `nomorepwn` core — the security model above applies verbatim; the
+app adds presentation and lifecycle on top.
 
 Security-relevant lifecycle choices:
 

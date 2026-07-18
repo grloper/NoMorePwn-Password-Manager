@@ -82,7 +82,7 @@ def main() -> int:
         print(f"ERROR: File not found: {source}")
         return 1
     if not vault.vault_exists(args.db):
-        print(f"ERROR: No vault at {args.db}. Create one first: python scripts/init_db.py")
+        print(f"ERROR: No vault at {args.db}. Launch NoMorePwn first and create your vault.")
         return 1
 
     raw_lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -137,7 +137,7 @@ def main() -> int:
             print(f"  line {num}: {reason}")
     print()
     print("IMPORTANT: Your plaintext file still exists. Once you've verified the")
-    print("import in the dashboard (streamlit run app.py), delete it securely:")
+    print("import in the NoMorePwn app, delete it securely:")
     print(f"  Linux:   shred -u {source}")
     print(f"  macOS:   rm -P {source}   (or use Finder's secure empty trash)")
     print(f"  Windows: use SDelete:  sdelete64.exe {source}")

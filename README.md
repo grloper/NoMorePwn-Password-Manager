@@ -127,6 +127,14 @@ Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, ke
 `%APPDATA%\NoMorePwn\vault.db` (encrypted) + `settings.json` (non-secret prefs).
 Point `NOMOREPWN_DATA` anywhere else — an encrypted volume, a USB stick — and it just works.
 
+**Two power tools ship alongside the app** (not yet in the GUI — PRs welcome):
+
+```bash
+python scripts/import_notepad.py passwords.txt   # bulk-import a plaintext file, encrypted on the way in
+python scripts/backup_tool.py export --out vault.nmpbak   # zero-knowledge encrypted backup blob
+python scripts/backup_tool.py restore vault.nmpbak        # ...restore it anywhere
+```
+
 ## 🧪 Tests
 
 ```bash

@@ -855,6 +855,61 @@ class CredentialGroupUiTests(unittest.TestCase):
         items = [r for r in rows if isinstance(r, _ItemRow)]
         self.assertEqual(len(items), 1, "search did not filter by group")
 
+    def test_collapse_all_hides_every_group(self):
+        view = self._grouped_view()
+        self.assertEqual(len(self._visible_items(view)), 3)
+
+        view.collapse_all()
+
+        self.assertEqual(len(self._visible_items(view)), 0,
+                         "Collapse all left some items visible")
+        # Headers stay so the user can expand them again.
+        self.assertIsNotNone(self._header(view, "EMAIL"))
+        self.assertIsNotNone(self._header(view, "GAMING"))
+
+    def test_expand_all_restores_after_collapse_all(self):
+        view = self._grouped_view()
+        view.collapse_all()
+        self.assertEqual(len(self._visible_items(view)), 0)
+
+        view.expand_all()
+
+        self.assertEqual(len(self._visible_items(view)), 3,
+                         "Expand all did not reopen every group")
+
+    def test_expand_all_reopens_a_manually_collapsed_group(self):
+        view = self._grouped_view()
+        self._header(view, "EMAIL").toggled.emit()
+        self.assertEqual(len(self._visible_items(view)), 1)
+
+        view.expand_all()
+
+        self.assertEqual(len(self._visible_items(view)), 3)
+
+    def test_group_controls_track_whether_there_is_anything_to_group(self):
+        from nomorepwn_app.view_vault import VaultView
+
+        # isHidden() reflects the explicit local flag regardless of whether the
+        # view has been shown — isVisible() would be False for an unshown view
+        # either way and pass for the wrong reason.
+        empty = VaultView(self.ctx)
+        empty.set_vault(self.vault)  # no credentials added
+        self.assertTrue(empty._group_controls.isHidden(),
+                        "bulk expand/collapse should hide with nothing to group")
+
+        self.vault.add_credential("gmail.com", "a", "pw-123456", group_name="Email")
+        populated = VaultView(self.ctx)
+        populated.set_vault(self.vault)
+        self.assertFalse(populated._group_controls.isHidden(),
+                         "bulk expand/collapse should show once there are items")
+
+    def test_collapse_all_survives_a_refresh(self):
+        view = self._grouped_view()
+        view.collapse_all()
+        view.refresh()
+        self.assertEqual(len(self._visible_items(view)), 0,
+                         "refresh forgot the bulk collapse")
+
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
 class SettingsExtensionSectionTests(unittest.TestCase):
@@ -899,6 +954,42 @@ class SettingsExtensionSectionTests(unittest.TestCase):
         self.assertIn(__version__, view.update_status.text())
         # Nothing is downloaded, so there must be no install affordance.
         self.assertFalse(view.update_install_btn.isVisible())
+
+    def test_settings_uses_a_category_navigation(self):
+        """The redesigned settings splits into one panel per category."""
+        from nomorepwn_app.view_settings import SettingsView
+
+        view = SettingsView(self.ctx, on_change=lambda: None)
+        # One nav row per stacked page, and every category is reachable.
+        self.assertEqual(view.nav.count(), view.pages.count())
+        self.assertGreaterEqual(view.nav.count(), 6)
+        labels = [view.nav.item(i).text().strip() for i in range(view.nav.count())]
+        for expected in ("Security", "Browser extension", "About"):
+            self.assertIn(expected, labels)
+
+    def test_setup_button_is_an_auto_install_action(self):
+        """The old 'Re-run setup' became a real install action."""
+        from nomorepwn_app.view_settings import SettingsView
+
+        view = SettingsView(self.ctx, on_change=lambda: None)
+        text = view.ext_setup_btn.text().lower()
+        self.assertIn("install", text)
+        self.assertNotIn("re-run setup", text)
+
+    def test_steps_name_the_selected_browsers_folder(self):
+        """Instructions must point at the per-browser dist folder, not a
+        single combined path that no browser can load."""
+        from nomorepwn_app.view_settings import SettingsView
+        from nomorepwn_app import browser_bridge
+
+        view = SettingsView(self.ctx, on_change=lambda: None)
+        # Default selection resolves to the Chrome build.
+        self.assertIn(str(browser_bridge.extension_dir("chrome")), view.ext_steps.text())
+
+        idx = view.ext_browser.findData("Firefox")
+        self.assertGreaterEqual(idx, 0, "Firefox must be offered as a target")
+        view.ext_browser.setCurrentIndex(idx)
+        self.assertIn(str(browser_bridge.extension_dir("Firefox")), view.ext_steps.text())
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
@@ -978,6 +1069,70 @@ class ExtensionIdTests(unittest.TestCase):
         derived = "".join(
             chr(ord("a") + int(c, 16)) for c in hashlib.sha256(der).hexdigest()[:32])
         self.assertEqual(derived, browser_bridge.EXTENSION_ID)
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class BrowserBridgePathTests(unittest.TestCase):
+    """Per-browser build selection, detection helpers, and load-page URLs.
+
+    These are the logic behind the extension-path fix: each browser must be
+    handed the build made for it, never the shared source tree.
+    """
+
+    def setUp(self):
+        from nomorepwn_app import browser_bridge
+        self.bridge = browser_bridge
+
+    def test_chromium_browsers_load_the_chrome_build(self):
+        for name in ("Chrome", "Edge", "Brave"):
+            self.assertEqual(self.bridge.variant_for(name), "chrome")
+        self.assertEqual(self.bridge.variant_for("Firefox"), "firefox")
+
+    def test_unknown_or_empty_browser_defaults_to_chrome(self):
+        self.assertEqual(self.bridge.variant_for(""), "chrome")
+        self.assertEqual(self.bridge.variant_for("Konqueror"), "chrome")
+
+    def test_extension_dir_points_at_the_committed_per_browser_builds(self):
+        chrome = self.bridge.extension_dir("Chrome")
+        firefox = self.bridge.extension_dir("Firefox")
+        self.assertEqual(chrome.name, "chrome")
+        self.assertEqual(firefox.name, "firefox")
+        self.assertNotEqual(chrome, firefox)
+        # From a source checkout these are the real dist folders on disk.
+        self.assertTrue((chrome / "manifest.json").is_file())
+        self.assertTrue((firefox / "manifest.json").is_file())
+
+    def test_each_build_carries_the_manifest_its_browser_requires(self):
+        import json
+
+        chrome = json.loads(
+            (self.bridge.extension_dir("Chrome") / "manifest.json").read_text("utf-8"))
+        firefox = json.loads(
+            (self.bridge.extension_dir("Firefox") / "manifest.json").read_text("utf-8"))
+        # Chrome wants a service_worker + the pinning key; Firefox wants scripts
+        # + gecko settings and no key.
+        self.assertIn("service_worker", chrome["background"])
+        self.assertIn("key", chrome)
+        self.assertIn("scripts", firefox["background"])
+        self.assertNotIn("key", firefox)
+        self.assertIn("browser_specific_settings", firefox)
+
+    def test_extensions_page_is_browser_appropriate(self):
+        self.assertEqual(self.bridge.extensions_page("Chrome"), "chrome://extensions")
+        self.assertEqual(self.bridge.extensions_page("Edge"), "chrome://extensions")
+        self.assertTrue(
+            self.bridge.extensions_page("Firefox").startswith("about:debugging"))
+
+    def test_default_browser_progid_mapping(self):
+        cases = {
+            "ChromeHTML": "Chrome",
+            "MSEdgeHTM": "Edge",
+            "BraveHTML": "Brave",
+            "FirefoxURL-308046B0AF4A39CB": "Firefox",
+            "AppXsomethingelse": None,
+        }
+        for prog_id, expected in cases.items():
+            self.assertEqual(self.bridge._browser_from_progid(prog_id), expected)
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")

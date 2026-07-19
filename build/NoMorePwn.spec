@@ -34,21 +34,29 @@ datas += collect_data_files("zxcvbn")
 datas += collect_data_files("certifi")
 
 # --- Browser extension ----------------------------------------------------
-# Bundled INTO the exe, then materialised to %APPDATA%\NoMorePwn\extension at
-# runtime (see nomorepwn_app/browser_bridge.py). Chrome's "Load unpacked"
-# needs a stable directory, and PyInstaller's onefile temp dir changes every
-# launch — so shipping it beside the .exe would work for the installer but not
-# for the portable build.
+# Bundled INTO the exe, then materialised to
+# %APPDATA%\NoMorePwn\extension\<browser> at runtime (see
+# nomorepwn_app/browser_bridge.py). A browser's "Load unpacked" needs a stable
+# directory, and PyInstaller's onefile temp dir changes every launch — so
+# shipping it beside the .exe would work for the installer but not for the
+# portable build.
 #
-# ALLOWLIST, not an exclude list: only these paths ship. extension/.keys/
-# holds the private signing key and must never end up in a build.
-_ext = os.path.join(ROOT, "extension")
-datas += [(os.path.join(_ext, "manifest.json"), "extension")]
-for _dirpath, _dirnames, _filenames in os.walk(os.path.join(_ext, "src")):
-    _rel = os.path.relpath(_dirpath, _ext)
-    for _name in _filenames:
-        if _name.endswith((".js", ".json", ".css", ".html")):
-            datas += [(os.path.join(_dirpath, _name), os.path.join("extension", _rel))]
+# We ship the PER-BROWSER builds (extension/dist/chrome and
+# extension/dist/firefox produced by extension/build.py), NOT the shared source
+# tree: Chrome and Firefox need different manifests and neither can load the
+# combined source manifest as-is.
+#
+# ALLOWLIST, not an exclude list: only these file types ship, and only from
+# under extension/dist/. extension/.keys/ holds the private signing key and is
+# outside dist/ entirely, so it can never end up in a build.
+_dist = os.path.join(ROOT, "extension", "dist")
+for _variant in ("chrome", "firefox"):
+    _root = os.path.join(_dist, _variant)
+    for _dirpath, _dirnames, _filenames in os.walk(_root):
+        _rel = os.path.relpath(_dirpath, _dist)
+        for _name in _filenames:
+            if _name.endswith((".js", ".json", ".css", ".html")):
+                datas += [(os.path.join(_dirpath, _name), os.path.join("extension", _rel))]
 
 excludes = [
     "tkinter",

@@ -120,6 +120,23 @@ class VaultView(QWidget):
         top.addWidget(self.count_lbl)
         ll.addLayout(top)
 
+        # Bulk expand/collapse of every group at once — session state, exactly
+        # like the per-group headers. Hidden while the vault is empty.
+        self._group_controls = QWidget()
+        gc = QHBoxLayout(self._group_controls)
+        gc.setContentsMargins(0, 0, 0, 0)
+        gc.setSpacing(4)
+        self.expand_all_btn = components.button("Expand all", "chevron-down", "Ghost")
+        self.expand_all_btn.setToolTip("Expand every group")
+        self.expand_all_btn.clicked.connect(self.expand_all)
+        self.collapse_all_btn = components.button("Collapse all", "chevron-right", "Ghost")
+        self.collapse_all_btn.setToolTip("Collapse every group")
+        self.collapse_all_btn.clicked.connect(self.collapse_all)
+        gc.addWidget(self.expand_all_btn)
+        gc.addWidget(self.collapse_all_btn)
+        gc.addStretch(1)
+        ll.addWidget(self._group_controls)
+
         search_wrap = QWidget()
         sw = QHBoxLayout(search_wrap)
         sw.setContentsMargins(0, 0, 0, 0)
@@ -204,6 +221,7 @@ class VaultView(QWidget):
         self._creds = self._vault.list_credentials()
         self.count_lbl.setText(str(len(self._creds)))
         self.empty_list_hint.setVisible(not self._creds)
+        self._group_controls.setVisible(bool(self._creds))
         self._rebuild_list()
         if select_id is not None:
             self._select_by_id(select_id)
@@ -281,6 +299,23 @@ class VaultView(QWidget):
             self._collapsed.discard(key)
         else:
             self._collapsed.add(key)
+        self._rebuild_list()
+
+    def collapse_all(self) -> None:
+        """Collapse every group at once. Session-scoped, like per-group toggling.
+
+        Keyed off the full credential set (not the current search) so a group
+        hidden by a filter is still remembered as collapsed once the filter
+        clears.
+        """
+        self._collapsed = {
+            label.casefold() for label, _ in groups.group_credentials(self._creds)
+        }
+        self._rebuild_list()
+
+    def expand_all(self) -> None:
+        """Expand every group at once."""
+        self._collapsed.clear()
         self._rebuild_list()
 
     def _apply_filter(self) -> None:

@@ -233,7 +233,14 @@ class Vault:
                 "This recovery kit was made for a different vault."
             )
         key = recovery.open_kit(kit_bytes, recovery_code, totp_secret)
-        if not verifier_hex or not crypto.check_verifier(key, bytes.fromhex(verifier_hex)):
+        try:
+            verified = bool(verifier_hex) and crypto.check_verifier(
+                key, bytes.fromhex(verifier_hex))
+        except ValueError:
+            # A tampered/malformed verifier is treated as a failed recovery,
+            # not an uncaught error — fail closed.
+            verified = False
+        if not verified:
             # The kit opened but its key is not this vault's key (e.g. the vault
             # was re-created after the kit was made). Indistinguishable, safe.
             raise recovery.RecoveryError(

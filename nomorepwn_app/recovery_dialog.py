@@ -131,7 +131,7 @@ class RecoveryKitDialog(QDialog):
         self.error.setVisible(False)
         try:
             result = self.build(self.mode.currentData())
-        except vault.VaultError as exc:
+        except (vault.VaultError, recovery.RecoveryError) as exc:
             self.error.setText(str(exc))
             self.error.setVisible(True)
             return

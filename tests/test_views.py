@@ -980,5 +980,116 @@ class ExtensionIdTests(unittest.TestCase):
         self.assertEqual(derived, browser_bridge.EXTENSION_ID)
 
 
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class RecoveryUiTests(unittest.TestCase):
+    """Recovery-kit Settings section + the create/recover dialogs' logic."""
+
+    def setUp(self):
+        from nomorepwn_app import theme
+        from nomorepwn_app.context import AppContext
+        from nomorepwn_app.util import ClipboardManager
+        from nomorepwn.settings import Settings
+
+        theme.set_active(theme.get_palette("dark"))
+        self.tmp = tempfile.mkdtemp()
+        self._real_db_path = config_module.DB_PATH
+        config_module.DB_PATH = Path(self.tmp) / "vault.db"
+        self.db_path = str(config_module.DB_PATH)
+        vault.create_vault(config_module.DB_PATH, MASTER)
+        self.vault = vault.Vault.unlock(config_module.DB_PATH, MASTER)
+        self.cid = self.vault.add_credential("github.com", "alice", "s3cret-pass", "n")
+
+        self.toasts: list[tuple[str, str]] = []
+
+        class _Toast:
+            def show(_s, text, kind="info", ms=2000):
+                self.toasts.append((kind, text))
+
+        self.ctx = AppContext(
+            settings=Settings(), toast=_Toast(), clipboard=ClipboardManager(),
+            notify=lambda t, m: None, get_vault=lambda: self.vault,
+        )
+
+    def tearDown(self):
+        try:
+            self.vault.lock()
+        except Exception:
+            pass
+        config_module.DB_PATH = self._real_db_path
+
+    def test_settings_view_has_a_recovery_button(self):
+        from nomorepwn_app.view_settings import SettingsView
+
+        view = SettingsView(self.ctx, on_change=lambda: None)
+        self.assertTrue(hasattr(view, "recovery_btn"))
+        self.assertIn("recovery", view.recovery_btn.text().lower())
+
+    def test_unlock_view_offers_recovery(self):
+        from nomorepwn_app.view_unlock import UnlockView
+
+        view = UnlockView(self.db_path, self.ctx.toast)
+        self.assertTrue(hasattr(view, "recover_btn"))
+
+    def test_kit_dialog_builds_and_writes_an_openable_kit(self):
+        from nomorepwn_app.recovery_dialog import RecoveryKitDialog
+        from nomorepwn import recovery
+
+        dlg = RecoveryKitDialog(None, lambda: self.vault, self.ctx)
+        result = dlg.build(recovery.MODE_KIT)
+        self.assertIn("recovery_code", result)
+        self.assertNotIn("totp_secret", result)
+        kit_file = Path(self.tmp) / "k.nmpkit"
+        dlg.write_kit(kit_file)
+        # The written kit opens this vault with the code the dialog produced.
+        self.vault.lock()
+        rv = vault.Vault.unlock_with_recovery(
+            self.db_path, kit_file.read_bytes(), result["recovery_code"])
+        self.assertEqual(rv.reveal_password(self.cid), "s3cret-pass")
+
+    def test_kit_dialog_totp_mode_includes_a_seed(self):
+        from nomorepwn_app.recovery_dialog import RecoveryKitDialog
+        from nomorepwn import recovery
+
+        dlg = RecoveryKitDialog(None, lambda: self.vault, self.ctx)
+        result = dlg.build(recovery.MODE_KIT_TOTP)
+        self.assertIn("totp_secret", result)
+        self.assertTrue(result["totp_uri"].startswith("otpauth://"))
+
+    def test_recover_dialog_recovers_and_rekeys(self):
+        from nomorepwn_app.recovery_dialog import RecoverDialog
+        from nomorepwn import recovery
+
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        self.vault.lock()
+        dlg = RecoverDialog(None, self.db_path)
+        NEW = "a fresh master password"
+        recovered = dlg.recover(kit["kit_bytes"], kit["recovery_code"], "", NEW, NEW)
+        self.assertEqual(recovered.reveal_password(self.cid), "s3cret-pass")
+        # The vault is now under the new password.
+        self.assertEqual(
+            vault.Vault.unlock(self.db_path, NEW).reveal_password(self.cid), "s3cret-pass")
+
+    def test_recover_dialog_rejects_bad_input(self):
+        from nomorepwn_app.recovery_dialog import RecoverDialog
+        from nomorepwn import recovery
+
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        self.vault.lock()
+        dlg = RecoverDialog(None, self.db_path)
+        # No kit chosen.
+        with self.assertRaises(recovery.RecoveryError):
+            dlg.recover(None, kit["recovery_code"], "", "long enough pw", "long enough pw")
+        # Password mismatch.
+        with self.assertRaises(vault.VaultError):
+            dlg.recover(kit["kit_bytes"], kit["recovery_code"], "", "long enough pw", "different")
+        # Too-short password.
+        with self.assertRaises(vault.VaultError):
+            dlg.recover(kit["kit_bytes"], kit["recovery_code"], "", "short", "short")
+        # Wrong recovery code.
+        wrong = recovery.encode_recovery_code(recovery.generate_recovery_key())
+        with self.assertRaises(recovery.RecoveryError):
+            dlg.recover(kit["kit_bytes"], wrong, "", "long enough pw", "long enough pw")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -128,10 +128,11 @@ Every change refreshes a sealed `.nmpbak` copy (5 generations kept), flushed bef
 
 ## 🔐 Security honesty
 
-- Your master password is the **only** key. **There is no recovery.**
+- By default your master password is the **only** key. You may optionally mint a **Recovery Kit** (Settings → Recovery, or `scripts/recovery_tool.py`) — an out-of-band file that escrows your key. It never touches `vault.db` or a backup, so it works **only** together with the recovery secrets *you* store yourself. Lose your password **and** the kit and the vault is unrecoverable — there is no server to reset it, and the kit is a master-password-equivalent, so guard it like one. The optional **kit + authenticator** mode also requires an authenticator seed, so a stolen kit alone opens nothing.
 - The vault file is safe to *lose*, not safe to *hand out*: secrets are unbreakable without your passphrase, but service names and usernames are visible metadata.
 - No software protects an unlocked vault from malware already running as you. Lock when you step away — NoMorePwn does it for you.
-- There are exactly **two** outbound requests in the codebase, both listed here: the opt-in HIBP range query (5 hex characters of a SHA-1), and the update check against the GitHub Releases API. Nothing else touches the network, and no vault data is involved in either.
+- There are exactly **two** outbound requests in the desktop app's codebase, both listed here: the opt-in HIBP range query (5 hex characters of a SHA-1), and the update check against the GitHub Releases API. Nothing else in the app touches the network, and no vault data is involved in either.
+- **The optional browser extension is a separate trust surface.** The guarantee above is about the desktop app. The extension runs in your browser with broad host access and reads login-form fields to capture credentials — so a compromised extension build, or cross-site scripting on a login page, could expose a credential *in the browser*, before it ever reaches NoMorePwn. That is the cost of capturing logins in a browser at all, not the desktop app phoning home: the shipped extension makes no web requests and talks to the app only over a local pipe.
 - **Updates are verified but not code-signed.** The app downloads a release installer over HTTPS and checks its SHA-256 before asking you to install it. That catches corruption and a swapped asset — it does *not* protect against a compromised GitHub account, since whoever can publish a release can publish a matching checksum. Turn updates off in **Settings → Updates** if you'd rather install manually.
 
 Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, key lifecycle, tamper evidence, and the three-ring SQL-injection defense.
@@ -141,6 +142,9 @@ Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — threat model, ke
 `%APPDATA%\NoMorePwn\vault.db` (encrypted) + `settings.json` (non-secret prefs)
 + `backups\vault-backup.nmpbak` (sealed auto-backup, plus `.1`, `.2` … generations).
 Point `NOMOREPWN_DATA` anywhere else — an encrypted volume, a USB stick — and it just works.
+
+Your **Recovery Kit** (`.nmpkit`), if you made one, lives wherever **you** saved it —
+deliberately *not* here, so a copy of this folder never contains a way back in.
 
 You may also see **`vault.db.v1-premigration`**. When a new version needs to change the database
 layout, NoMorePwn parks an untouched copy of the old file beside it *before* upgrading, and never
@@ -166,6 +170,26 @@ python scripts/backup_tool.py export --out vault.nmpbak   # zero-knowledge blob
 python scripts/backup_tool.py restore vault.nmpbak        # ...restore it anywhere
 python scripts/import_notepad.py passwords.txt            # bulk-import a plaintext file
 ```
+
+### 🔑 If you forget your master password
+
+There is no reset button — but you can prepare one in advance. A **Recovery Kit**
+escrows your master key into a small out-of-band file (never into `vault.db`), so
+a forgotten password is recoverable *if* you made a kit first:
+
+```bash
+python scripts/recovery_tool.py create-kit --out my.nmpkit               # kit + recovery code
+python scripts/recovery_tool.py create-kit --out my.nmpkit --mode kit+totp # also an authenticator seed
+python scripts/recovery_tool.py recover my.nmpkit                        # recover, then set a new password
+```
+
+- **`kit`** — recovery needs the kit file **and** the recovery code (store them apart).
+- **`kit+totp`** — recovery also needs the authenticator seed you saved at setup, so a
+  stolen kit alone can't open the vault. The rotating 6-digit codes aren't what protects
+  you — the *seed*, stored separately, is; see `docs/design/vault-key-recovery.md`.
+
+Recovery **rewrites the whole vault** under your new password (a `<vault>.pre-rekey`
+copy is saved first). The kit is a master-password-equivalent — protect it like one.
 
 ## 🧪 Tests
 

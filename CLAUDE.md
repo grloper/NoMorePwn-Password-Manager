@@ -59,9 +59,10 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
    produce `cred:{uuid}:password` / `cred:{uuid}:notes`. Never re-bind to `id`, `service_name`, or
    `username` — `update_credential` renames those. Never change the literal format: schema
    migrations exist (`db.migrate`, invariant 16) but they deliberately never touch ciphertext, and
-   **there is still no rekey code anywhere in the repo** — so changing the AAD format makes every
-   existing vault permanently undecryptable. No test asserts the format itself; the suite stays
-   green if you break it.
+   the one rekey path (`Vault.rekey`, invariant 18) re-encrypts every secret under the **same**
+   AAD — so changing the AAD format still makes every existing vault permanently undecryptable, and
+   rekey does not rescue you (it preserves whatever format it finds). No test asserts the format
+   itself; the suite stays green if you break it.
 2. **Never change `_VERIFIER_PLAINTEXT` / `_VERIFIER_AAD`** (`crypto.py:57-58`). A failed verifier
    surfaces as "Master password is incorrect." — indistinguishable from a typo, so the user never
    learns their vault was bricked.
@@ -114,15 +115,27 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
     symptom is a dropped browser connection.
 16. **A migration never touches `uuid`, `password_enc`, or `notes_enc`** (`db.py` `_MIGRATIONS`).
     AAD is bound to the row's uuid, so rewriting any of the three makes every secret permanently
-    undecryptable — and there is no rekey path in this repo. Adding a column is safe precisely
-    because it touches none of them. Migrations must also be **idempotent** (guard on
-    `credential_columns`), because they run on every unlock. Guarded by
+    undecryptable. The one sanctioned rewriter of those columns is a **rekey** (`rekey_credential`/
+    `rekey_history`, invariant 18), never a migration — and even it only ever decrypts-then-
+    re-encrypts under the *same* uuid-bound AAD. Adding a column is safe precisely because it
+    touches none of them. Migrations must also be **idempotent** (guard on `credential_columns`),
+    because they run on every unlock. Guarded by
     `tests/test_core.py::SchemaMigrationTests::test_unlock_migrates_and_secrets_still_decrypt`,
     which fails with `DecryptionError` the moment a migration rewrites a uuid.
 17. **`vault.migrate_schema` writes `<vault>.vN-premigration` before upgrading, and never deletes
     it.** It is the only recovery path if a migration corrupts the file — the user's other copy is
     an encrypted `.nmpbak` that needs this same app to open. Written with `db.snapshot_bytes`
     (SQLite's online-backup API), not a file copy, so it is never a torn page.
+18. **`Vault.rekey` is the repo's one rekey path** (recovery + change-master-password). It
+    re-encrypts every credential, note, and history row from the old key to a new one, preserving
+    each row's uuid-bound AAD **verbatim** (invariant 1 — only the key changes), keeps the history
+    row that mirrors the current password byte-identical to it (invariant 7), re-wraps the separate
+    backup key, and writes a fresh verifier — all in one `db.connect` transaction. It snapshots
+    `<vault>.pre-rekey` via `db.snapshot_bytes` first and never deletes it (sibling of invariant
+    17). Recovery material (the recovery key, the escrow blob, the TOTP seed) is **never** written
+    to `vault.db`/`.nmpbak` — only the non-secret `vault_id` is. Guarded by
+    `tests/test_core.py::RekeyTests` and `::RecoveryKitTests`
+    (`test_no_recovery_material_touches_vault_or_backup` asserts the on-disk property).
 
 ## Traps
 

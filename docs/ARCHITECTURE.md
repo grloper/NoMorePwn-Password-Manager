@@ -23,11 +23,29 @@ one native desktop app, zero required network access.
    Everything else is import-time provably offline. The updater is the
    larger of the two surfaces: it fetches an executable and hands it to the
    OS. See §10 for what its integrity check does and does not guarantee.
+   Master-key recovery (§11), including its optional TOTP second factor
+   (`pyotp`, RFC 6238), is entirely offline and adds **no** third path — the
+   enumeration above stays at two.
 
    The browser extension under `extension/` is a separate component with its
    own network posture — it observes response headers on sites the user
    visits and never transmits vault data. It reaches this app only through a
-   local native-messaging pipe, never a socket.
+   local native-messaging pipe, never a socket. The shipped extension makes no
+   `fetch`/XHR/WebSocket calls of its own; it sends a *verdict*, plus once a
+   captured credential, over Chrome's local IPC.
+
+   The honest caveat is the browser surface, not the wire. The extension holds
+   `<all_urls>` host access and reads login-form fields to do its job, so a
+   compromised extension *build* (a malicious update or supply-chain swap) could
+   exfiltrate a captured credential in the browser **before** it ever reaches
+   this app — as could ordinary cross-site scripting on the login page itself,
+   which reads the form field before any extension or the app is involved. That
+   is a browser-integration attack surface, inherent to capturing logins in a
+   browser at all; it is **not** the desktop app reaching the network. The two
+   paths enumerated above are the desktop app's complete network footprint, and
+   neither carries vault data. The extension's own mitigations are the pinned
+   extension ID (§ `browser_bridge`) and Chrome Web Store review — not a
+   promise that a browser add-on can never be turned against you.
 
 ## 2. Component map
 
@@ -213,6 +231,9 @@ bytes.
 | SQL injection | Parameterized-only DB layer + allowlist validation + policy test |
 | Password exposure during leak check | k-anonymity: 5 hash chars out, comparison local, padded responses |
 | Shoulder surfing | Passwords masked by default; per-item, on-demand Reveal |
+| Forgotten master password | *Opt-in* Recovery Kit (§11) escrows the key out of band; no kit ⇒ still unrecoverable, by design |
+| Recovery kit stolen | Useless alone — needs the recovery code (and, in `kit+totp` mode, an authenticator seed) kept elsewhere; nothing recovery-related is in `vault.db`/`.nmpbak` |
+| Recovery code or seed stolen without the kit | Useless — the escrow blob lives only in the kit file the user holds |
 
 **Out of scope (v0.1):** malware/keyloggers on the host (no software
 defeats a compromised OS), memory forensics while unlocked, and
@@ -315,3 +336,48 @@ papered over.
 
 The vault, backups, and settings live in `%APPDATA%\NoMorePwn`; the installer
 writes only to the program directory and leaves them untouched.
+
+## 11. Master-key recovery (Recovery Kit)
+
+By default the master key is derived from the password and never stored, so a
+forgotten password loses the vault. Recovery is **opt-in**: the user mints a
+**Recovery Kit** that escrows the key entirely *out of band*. The governing rule
+(the threat model assumes an attacker can read **and write** `vault.db` and any
+`.nmpbak`) is that **no recovery material is ever written to those files** — only
+a random, non-secret `vault_id` is, to bind a kit to its vault.
+
+```
+setup (unlocked):  R = 256-bit CSPRNG "recovery code"          ┐
+                   KEK = HKDF(R [‖ TOTP seed S], salt=vault_id) ├─► wrapped_master = AES-GCM(KEK, K)
+                   kit file = magic ‖ header(mode,vault_id) ‖ wrapped_master   (user stores it)
+                   R shown once; S shown once as an otpauth:// QR + text       (stored apart)
+
+recover:           kit + R [+ S] ─► KEK ─► K ─► check against verifier ─► set new password ─► rekey
+```
+
+- **`R` is full-entropy**, so it is folded into the key-encryption key with
+  **HKDF-SHA256**, never Argon2id/PBKDF2 — the password KDF and its 600k floor
+  are untouched (`crypto.hkdf_sha256`; it refuses nothing, so never hand it a
+  password). The escrow blob's header is its GCM AAD, so the mode can't be
+  downgraded nor the kit retargeted to another vault.
+- **Two modes.** `kit` needs the kit file **+** the recovery code. `kit+totp`
+  additionally folds in an authenticator **seed** `S`, so the kit + code alone
+  are not enough. Honest caveat: what protects you is that `S` lives nowhere the
+  kit or the vault file can reach (you store it apart / in your authenticator) —
+  *not* the rotating 6-digit codes, which an offline app with an attacker-
+  readable file could never verify securely. See
+  `docs/design/vault-key-recovery.md` for the full reasoning.
+- **Recovery is the repo's one rekey path.** After the kit reconstructs `K` and
+  it is proven against the verifier, the user sets a new password and
+  `Vault.rekey` re-encrypts every credential, note, and history row from `K` to
+  the new key — each under its **same** uuid-bound AAD (invariant 1; only the
+  key changes) — re-wraps the separate backup key, writes a fresh verifier, and
+  does it all in one transaction after snapshotting `<vault>.pre-rekey`
+  (sibling of invariant 17). This is also what a future *change master password*
+  would use.
+- **What it is worth.** The kit is a master-password-equivalent: whoever holds
+  everything a mode requires can open the vault. `kit+totp` splits that across
+  two independently-stored secrets so no single stolen item suffices. Lose the
+  password *and* the kit (or a required factor) and the vault is unrecoverable —
+  there is no server to reset it, which is the same trade that keeps the vault
+  private in the first place.

@@ -54,6 +54,28 @@ MODE_PASSPHRASE = "passphrase"
 
 BACKUP_EXTENSION = ".nmpbak"
 
+# A real header is ~200 bytes; anything past this is either hostile or corrupt.
+_MAX_HEADER_BYTES = 64 * 1024
+
+# Upper bounds on KDF parameters read from an (attacker-writable) header. A
+# .nmpbak we wrote only ever carries crypto.DEFAULT_* parameters, so anything
+# beyond these bounds is either hostile or unopenable here — and deriving with
+# it would wedge the app (a gigabyte Argon2 memory_cost has no cancel path).
+# We *reject* rather than clamp: clamping would change the derived key and
+# permanently brick a legitimate backup, since GCM cannot open under a
+# different key. Parameters inside the bounds pass through unchanged, so a real
+# backup still re-derives the identical key.
+_ARGON2_BOUNDS = {
+    "time_cost": (1, 20),
+    "memory_cost": (8, 1_048_576),   # KiB: 8 KiB .. 1 GiB
+    "parallelism": (1, 16),
+}
+# Ceiling only — the 600,000-iteration *floor* stays in crypto.derive_key
+# (invariant 10). This just stops a header claiming 10^12 iterations from
+# spinning the KDF forever.
+_PBKDF2_MAX_ITERATIONS = 100_000_000
+_KNOWN_KDFS = ("argon2id", "pbkdf2_sha256")
+
 
 class BackupError(Exception):
     """Base class for backup failures. Messages are UI-safe."""
@@ -141,46 +163,119 @@ def rotate(dest: Path, keep: int) -> None:
 # Reading
 # --------------------------------------------------------------------------
 
+def _read_framed_header(blob: bytes, magic: bytes) -> tuple[dict, bytes, int]:
+    """Parse the length-framed JSON header that follows ``magic``.
+
+    Returns ``(header_dict, raw_header_bytes, payload_offset)``. Every malformed
+    input — a truncated length field, an implausible length, non-UTF-8 or
+    non-JSON bytes — raises :class:`BackupFormatError`, never a raw
+    ``struct.error`` / ``JSONDecodeError`` that would sail past a caller's
+    ``except BackupError``. Shared by V1 and V2 so both get the same guards;
+    the V1 branch used to have none.
+    """
+    offset = len(magic)
+    if len(blob) < offset + 4:
+        raise BackupFormatError("Backup file is truncated.")
+    (header_len,) = struct.unpack(">I", blob[offset:offset + 4])
+    offset += 4
+    if header_len == 0 or header_len > _MAX_HEADER_BYTES:
+        raise BackupFormatError("Backup header length is implausible.")
+    raw = blob[offset:offset + header_len]
+    if len(raw) != header_len:
+        raise BackupFormatError("Backup file is truncated.")
+    try:
+        header = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise BackupFormatError("Backup header is corrupted.") from exc
+    if not isinstance(header, dict):
+        raise BackupFormatError("Backup header is corrupted.")
+    return header, raw, offset + header_len
+
+
 def read_header(blob: bytes) -> dict:
     """Parse the (non-secret) header without decrypting anything."""
     if blob.startswith(MAGIC_V2):
-        offset = len(MAGIC_V2)
-        if len(blob) < offset + 4:
-            raise BackupFormatError("Backup file is truncated.")
-        (header_len,) = struct.unpack(">I", blob[offset:offset + 4])
-        offset += 4
-        raw = blob[offset:offset + header_len]
-        if len(raw) != header_len:
-            raise BackupFormatError("Backup file is truncated.")
-        try:
-            header = json.loads(raw.decode("utf-8"))
-        except ValueError as exc:
-            raise BackupFormatError("Backup header is corrupted.") from exc
+        header, raw, payload_offset = _read_framed_header(blob, MAGIC_V2)
         header["_header_bytes"] = raw
-        header["_payload_offset"] = offset + header_len
+        header["_payload_offset"] = payload_offset
         return header
 
     if blob.startswith(MAGIC_V1):
-        offset = len(MAGIC_V1)
-        (header_len,) = struct.unpack(">I", blob[offset:offset + 4])
-        offset += 4
-        header = json.loads(blob[offset:offset + header_len].decode("utf-8"))
+        header, _raw, payload_offset = _read_framed_header(blob, MAGIC_V1)
+        # V1 predates the header-as-AAD scheme: its AAD is the fixed V1_AAD
+        # constant, so the raw header bytes are deliberately NOT used as AAD
+        # (invariant 9 applies only to V2). Hence _header_bytes stays None.
         header.update({"v": 1, "mode": MODE_MASTER,
                        "_header_bytes": None,
-                       "_payload_offset": offset + header_len})
+                       "_payload_offset": payload_offset})
         return header
 
     raise BackupFormatError("Not a NoMorePwn backup file (bad magic bytes).")
 
 
+def _validate_kdf(kdf_name, kdf_params) -> None:
+    """Reject KDF metadata we will not derive with.
+
+    The header is attacker-writable, so an unknown algorithm, a wrong type, or a
+    parameter outside safe bounds is refused *before* a single byte reaches the
+    KDF. This is what stops a crafted header (e.g. a gigabyte Argon2
+    ``memory_cost``) from wedging the app the moment Restore is clicked.
+    """
+    if kdf_name not in _KNOWN_KDFS:
+        raise BackupFormatError(f"Unsupported backup KDF: {kdf_name!r}.")
+    if not isinstance(kdf_params, dict):
+        raise BackupFormatError("Backup KDF parameters are malformed.")
+
+    def _as_int(name: str) -> int:
+        if name not in kdf_params:
+            raise BackupFormatError(f"Backup KDF parameter {name!r} is missing.")
+        value = kdf_params[name]
+        # bool is an int subclass; a JSON true/false is not a valid parameter.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise BackupFormatError(f"Backup KDF parameter {name!r} must be an integer.")
+        return value
+
+    if kdf_name == "argon2id":
+        for name, (low, high) in _ARGON2_BOUNDS.items():
+            value = _as_int(name)
+            if not (low <= value <= high):
+                raise BackupFormatError(
+                    f"Backup Argon2 parameter {name}={value} is outside the "
+                    f"supported range [{low}, {high}]."
+                )
+    else:  # pbkdf2_sha256
+        iterations = _as_int("iterations")
+        if iterations > _PBKDF2_MAX_ITERATIONS:
+            raise BackupFormatError(
+                f"Backup PBKDF2 iterations={iterations} exceeds the supported "
+                f"maximum of {_PBKDF2_MAX_ITERATIONS}."
+            )
+        # The 600,000-iteration floor stays in crypto.derive_key (invariant 10).
+
+
 def derive_key(header: dict, secret: str) -> bytes:
-    """Re-derive the blob's key from the user's secret using its header."""
-    return crypto.derive_key(
-        secret,
-        bytes.fromhex(header["salt"]),
-        header["kdf_name"],
-        header["kdf_params"],
-    )
+    """Re-derive the blob's key from the user's secret using its header.
+
+    The header is attacker-writable, so its KDF metadata is validated and
+    bounded (:func:`_validate_kdf`) before it reaches the KDF, and any residual
+    :class:`crypto.CryptoError` (e.g. a below-floor PBKDF2 config, a bad salt
+    length) is surfaced as a UI-safe :class:`BackupFormatError` rather than
+    leaking past the callers' ``except BackupError``.
+    """
+    kdf_name = header.get("kdf_name")
+    kdf_params = header.get("kdf_params")
+    salt_hex = header.get("salt")
+    _validate_kdf(kdf_name, kdf_params)
+    if not isinstance(salt_hex, str):
+        raise BackupFormatError("Backup salt is missing or malformed.")
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError as exc:
+        raise BackupFormatError("Backup salt is not valid hex.") from exc
+    try:
+        return crypto.derive_key(secret, salt, kdf_name, kdf_params)
+    except crypto.CryptoError as exc:
+        raise BackupFormatError(str(exc)) from exc
 
 
 def open_blob(blob: bytes, secret: str) -> bytes:

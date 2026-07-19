@@ -31,8 +31,18 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** Paths that generally only exist behind a login. */
 const AUTHENTICATED_ROUTE = /^\/(dashboard|home|account|profile|app|admin|settings|feed|inbox|my)\b/i;
 
-/** Paths that mean we are still sitting on the login flow. */
-const LOGIN_ROUTE = /(login|signin|sign-in|auth|session|sso|challenge|verify|mfa|otp)/i;
+/**
+ * Paths that mean we are still sitting on the login flow.
+ *
+ * A login token matches only when it is NOT the *prefix* of a longer word, so
+ * `/author/ofek` no longer matches "auth" (the old unanchored regex did, which
+ * silently zeroed verification for those routes) while `/auth/callback`,
+ * `/oauth/authorize`, `/login-error`, `/user-login`, and `/sign-in` still do.
+ * Matching here fails safe: a false match only costs a missed save; a false
+ * *miss* would let a failed login redirecting to a login page score as success,
+ * so we keep the token list broad and only trim the prefix-of-a-word case.
+ */
+const LOGIN_ROUTE = /(?:login|sign-?in|auth|authenticate|session|sso|challenge|verify|mfa|otp)(?![a-z])/i;
 
 /** Cookie names that plausibly carry a session, rather than CSRF/analytics. */
 const SESSION_COOKIE = /^(sid|sess|session|auth|token|jwt|remember|login|connect\.sid|_?[a-z]*session[a-z_]*)/i;
@@ -45,12 +55,59 @@ function pathOf(url) {
   }
 }
 
-function sameOriginPath(url, base) {
+/** Resolve a possibly-relative URL (e.g. a `Location` header) against a base. */
+function absoluteUrl(url, base) {
   try {
-    return new URL(url, base).pathname;
+    return new URL(url, base).href;
   } catch {
     return '';
   }
+}
+
+function isIpLiteral(host) {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(':');
+}
+
+/** Registrable-ish domain: the last two dot-labels (no Public Suffix List here). */
+function baseDomain(host) {
+  const labels = host.split('.').filter(Boolean);
+  return labels.length <= 2 ? host : labels.slice(-2).join('.');
+}
+
+/**
+ * Is `url` on the same site as the login page `base`?
+ *
+ * `webRequest` fires for *every* request in the tab — third-party subframes, ad
+ * beacons, analytics XHR — so without this gate a stray 401 from any of them
+ * rejects the capture outright, and a stray redirect or session-shaped cookie
+ * inflates the score toward a false "verified". Only the login site's own
+ * responses are evidence.
+ *
+ * "Same site" is same scheme + same registrable domain, approximated by the
+ * last two labels because an extension has no Public Suffix List. The residual
+ * gap (two sibling `*.co.uk` sites in one tab) is far narrower than the bug it
+ * closes, and IP literals fall back to exact-host equality so `1.2.3.4` and
+ * `9.8.3.4` are never grouped.
+ */
+function isSameSite(url, base) {
+  let a;
+  let b;
+  try {
+    a = new URL(url);
+  } catch {
+    return false;
+  }
+  try {
+    b = new URL(base);
+  } catch {
+    return false;
+  }
+  if (a.protocol !== b.protocol) return false;
+  const ha = a.hostname.toLowerCase();
+  const hb = b.hostname.toLowerCase();
+  if (ha === hb) return true;
+  if (isIpLiteral(ha) || isIpLiteral(hb)) return false;
+  return baseDomain(ha) === baseDomain(hb);
 }
 
 function headerValues(headers, name) {
@@ -69,6 +126,12 @@ export function scoreResponse(entry, response) {
   const evidence = [];
   let points = 0;
 
+  // Only the login site's own responses are evidence. A third-party 401 must
+  // not reject the capture, and a third-party redirect/cookie must not score.
+  if (!isSameSite(response.url, entry.loginUrl)) {
+    return { rejected: false, points: 0, evidence };
+  }
+
   if (REJECTION_STATUSES.has(response.statusCode)) {
     return { rejected: true, points: 0, evidence: [`HTTP ${response.statusCode}`] };
   }
@@ -77,11 +140,18 @@ export function scoreResponse(entry, response) {
 
   if (REDIRECT_STATUSES.has(response.statusCode)) {
     const [location] = headerValues(response.responseHeaders, 'location');
-    const destination = location ? sameOriginPath(location, response.url) : '';
+    const destUrl = location ? absoluteUrl(location, response.url) : '';
+    const destination = destUrl ? pathOf(destUrl) : '';
 
-    // A redirect *back to* the login page is the classic failure pattern —
-    // it earns nothing rather than being treated as evidence of success.
-    if (destination && destination !== loginPath && !LOGIN_ROUTE.test(destination)) {
+    // A redirect *back to* the login page is the classic failure pattern, and a
+    // redirect *off to another site* is not evidence this login succeeded —
+    // both earn nothing.
+    if (
+      destination &&
+      isSameSite(destUrl, entry.loginUrl) &&
+      destination !== loginPath &&
+      !LOGIN_ROUTE.test(destination)
+    ) {
       points += SCORE.REDIRECT_OFF_LOGIN;
       evidence.push(`${response.statusCode} -> ${destination}`);
 
@@ -113,6 +183,12 @@ export function scoreResponse(entry, response) {
 export function scoreNavigation(entry, nav) {
   const evidence = [];
   let points = 0;
+
+  // A top-frame navigation to a different site is the user leaving the login
+  // site, not a successful login on it.
+  if (!isSameSite(nav.url, entry.loginUrl)) {
+    return { rejected: false, points: 0, evidence };
+  }
 
   const loginPath = pathOf(entry.loginUrl);
   const landedPath = pathOf(nav.url);

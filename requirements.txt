@@ -6,3 +6,4 @@ cryptography>=42.0        # AES-256-GCM authenticated encryption
 argon2-cffi>=23.1         # Argon2id key derivation (preferred KDF)
 zxcvbn>=4.4.28            # pattern-aware local password-strength estimation
 requests>=2.32            # HIBP k-anonymity range queries (5 hash chars only)
+pyotp>=2.9               # offline RFC-6238 TOTP for the recovery second factor (no network)

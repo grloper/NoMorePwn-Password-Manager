@@ -127,6 +127,67 @@ section('2. Verifier scoring');
 
   const navStay = scoreNavigation(entry, { url: 'https://app.example.com/login', transitionQualifiers: [] });
   check('navigation back to /login scores 0', navStay.points === 0);
+
+  // --- origin isolation: third-party traffic in the tab is not evidence ---
+  const tp401 = scoreResponse(entry, { statusCode: 401, url: 'https://evil.example.net/collect', responseHeaders: [] });
+  check('a third-party 401 does NOT reject the capture', tp401.rejected === false, JSON.stringify(tp401));
+
+  const tpRedirect = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://tracker.ads.com/r',
+    responseHeaders: [hdr('Location', 'https://tracker.ads.com/dashboard')],
+  });
+  check('a third-party redirect scores nothing', tpRedirect.points === 0, JSON.stringify(tpRedirect));
+
+  const tpCookie = scoreResponse(entry, {
+    statusCode: 200,
+    url: 'https://analytics.other.com/beacon',
+    responseHeaders: [hdr('Set-Cookie', 'sessionid=abc')],
+  });
+  check('a third-party session cookie scores nothing', tpCookie.points === 0, JSON.stringify(tpCookie));
+
+  const tpNav = scoreNavigation(entry, { url: 'https://elsewhere.com/dashboard', transitionQualifiers: ['server_redirect'] });
+  check('a navigation to another site scores nothing', tpNav.points === 0, JSON.stringify(tpNav));
+
+  // --- LOGIN_ROUTE anchoring: /author is not a login route, /auth/... still is ---
+  const authorRedirect = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Location', '/author/ofek')],
+  });
+  check('/author is no longer misread as a login route', authorRedirect.points >= SUCCESS_THRESHOLD, JSON.stringify(authorRedirect));
+
+  const authCallback = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Location', '/auth/callback')],
+  });
+  check('a redirect that stays on an auth route still scores 0', authCallback.points === 0, JSON.stringify(authCallback));
+
+  // A login token mid-segment (e.g. /user-login) must still read as login flow,
+  // so a failed login bouncing there is not mistaken for success.
+  const userLogin = scoreResponse(entry, {
+    statusCode: 302,
+    url: 'https://app.example.com/login',
+    responseHeaders: [hdr('Location', '/user-login?error=1')],
+  });
+  check('/user-login is still recognised as a login route', userLogin.points === 0, JSON.stringify(userLogin));
+}
+
+/* ================================================================== */
+section('2b. capture.js ↔ shared/messages.js contract');
+/* ================================================================== */
+{
+  // capture.js is a classic content script and cannot import shared/messages.js,
+  // so it hardcodes the message-type strings. Nothing else pins the two copies
+  // together — this makes a rename in shared/messages.js a test failure instead
+  // of a silently dead capture path (all other checks stay green).
+  const { MSG } = await mod('shared/messages.js');
+  const captureSrc = readFileSync(new URL('content/capture.js', SRC), 'utf8');
+  const pins = (v) => captureSrc.includes(`'${v}'`);
+  check('capture.js pins SUBMIT_OBSERVED to shared/messages.js', pins(MSG.SUBMIT_OBSERVED), MSG.SUBMIT_OBSERVED);
+  check('capture.js pins SPA_SUCCESS to shared/messages.js', pins(MSG.SPA_SUCCESS), MSG.SPA_SUCCESS);
+  check('capture.js pins SPA_FAILURE to shared/messages.js', pins(MSG.SPA_FAILURE), MSG.SPA_FAILURE);
 }
 
 /* ================================================================== */

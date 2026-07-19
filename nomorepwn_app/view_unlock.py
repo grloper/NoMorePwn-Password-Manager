@@ -64,6 +64,10 @@ class UnlockView(QWidget):
         card.add(self.unlock_btn)
         col.addWidget(card)
 
+        self.recover_btn = components.button("Forgot your master password?", object_name="Ghost")
+        self.recover_btn.clicked.connect(self._open_recovery)
+        col.addWidget(self.recover_btn, 0, Qt.AlignCenter)
+
         row.addWidget(self.col_host)
         row.addStretch(1)
         outer.addLayout(row)
@@ -75,6 +79,17 @@ class UnlockView(QWidget):
     def focus_input(self) -> None:
         self.pw.setFocus()
         self.pw.selectAll()
+
+    def _open_recovery(self) -> None:
+        from PySide6.QtWidgets import QDialog
+
+        from .recovery_dialog import RecoverDialog
+
+        dlg = RecoverDialog(self, self._db_path)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.vault is not None:
+            self._toast.show("Vault recovered — remember your new master password.",
+                             "success", 5000)
+            self.unlocked.emit(dlg.vault)
 
     def _submit(self) -> None:
         password = self.pw.text()

@@ -8,6 +8,9 @@
 >   `Vault.create_recovery_kit`, `vault_id` meta, `<vault>.pre-rekey` snapshot.
 > - CLI: `scripts/recovery_tool.py` (`create-kit` / `recover`). Dependency:
 >   `pyotp` (offline). Tests: `tests/test_core.py::RekeyTests`, `::RecoveryKitTests`.
+> - GUI: `nomorepwn_app/recovery_dialog.py` (`RecoveryKitDialog`,
+>   `RecoverDialog`), a Settings "Recovery kit" card, and a "Forgot your master
+>   password?" entry on the lock screen. Tests: `tests/test_views.py::RecoveryUiTests`.
 > - invariants: CLAUDE.md 1 & 16 reworded, new invariant 18 added.
 >
 > The `kit+totp` mode implements the honest caveat from §6: the authenticator

@@ -165,6 +165,23 @@ class SettingsView(QWidget):
         backup_card.body.addLayout(actions)
         lay.addWidget(backup_card)
 
+        # -- Recovery kit ----------------------------------------------
+        rec_card = Card()
+        rec_card.add(components.heading("Recovery kit", "H3"))
+        rec_card.add(components.muted(
+            "Forget your master password and there is no reset — unless you make a "
+            "recovery kit first. It escrows your key into a file you store yourself; "
+            "nothing about it is written into your vault or backups. The optional "
+            "authenticator mode also requires a seed, so the kit file alone opens "
+            "nothing. Keep the kit as safe as your password."))
+        self.recovery_btn = components.button("Create recovery kit…", "key")
+        self.recovery_btn.clicked.connect(self._create_recovery_kit)
+        rec_card.add(_Setting(
+            "Recovery kit",
+            "Make one now so a forgotten password is recoverable later.",
+            self.recovery_btn))
+        lay.addWidget(rec_card)
+
         # -- Updates ---------------------------------------------------
         upd_card = Card()
         upd_card.add(components.heading("Updates", "H3"))
@@ -425,6 +442,15 @@ class SettingsView(QWidget):
                 confirm_text="Restart & update"):
             return
         self._ctx.apply_update(installer)
+
+    # -- recovery kit ---------------------------------------------------
+
+    def _create_recovery_kit(self) -> None:
+        if self._ctx.get_vault() is None:
+            self._ctx.toast.show("Unlock the vault first.", "error")
+            return
+        from .recovery_dialog import RecoveryKitDialog
+        RecoveryKitDialog(self, self._ctx.get_vault, self._ctx).exec()
 
     # -- browser extension ----------------------------------------------
 

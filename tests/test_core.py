@@ -787,6 +787,100 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(backup.BackupFormatError):
             backup.read_header(b"just some random bytes")
 
+    # -- corrupt / malicious headers ------------------------------------
+
+    @staticmethod
+    def _blob_with_header(header: dict, magic=backup.MAGIC_V2,
+                          payload: bytes = b"\x00" * 40) -> bytes:
+        """A backup blob carrying an arbitrary (unsealed) header, for testing
+        the header-parsing/validation guards without a real key."""
+        hb = json.dumps(header, sort_keys=True).encode("utf-8")
+        return magic + len(hb).to_bytes(4, "big") + hb + payload
+
+    def test_v1_corrupt_header_raises_backup_error(self):
+        # The V1 branch used to call struct.unpack / json.loads with no guard,
+        # so a truncated or garbage header escaped as struct.error /
+        # JSONDecodeError, past every `except BackupError`. Now each is caught.
+        cases = [
+            backup.MAGIC_V1,                                    # no length field
+            backup.MAGIC_V1 + b"\x00\x00",                      # truncated length
+            backup.MAGIC_V1 + (5).to_bytes(4, "big") + b"xx",   # claims 5, has 2
+            backup.MAGIC_V1 + (4).to_bytes(4, "big") + b"notj", # 4 bytes, not JSON
+            backup.MAGIC_V1 + (2).to_bytes(4, "big") + b"[]",   # JSON, not an object
+            backup.MAGIC_V1 + (0).to_bytes(4, "big"),           # zero-length header
+        ]
+        for blob in cases:
+            with self.assertRaises(backup.BackupError):
+                backup.read_header(blob)
+
+    def test_header_length_cap_rejects_implausible_length(self):
+        # A header claiming ~1 GB must be refused up front, not sliced/parsed.
+        for magic in (backup.MAGIC_V1, backup.MAGIC_V2):
+            blob = magic + (10 ** 9).to_bytes(4, "big") + b"x"
+            with self.assertRaises(backup.BackupError):
+                backup.read_header(blob)
+
+    def test_v1_wellformed_header_still_parses(self):
+        # Guarding V1 must not break a well-formed V1 header.
+        blob = self._blob_with_header(
+            {"kdf_name": "argon2id",
+             "kdf_params": {"time_cost": 3, "memory_cost": 65536, "parallelism": 4},
+             "salt": "00" * 16},
+            magic=backup.MAGIC_V1,
+        )
+        parsed = backup.read_header(blob)
+        self.assertEqual(parsed["v"], 1)
+        self.assertEqual(parsed["mode"], backup.MODE_MASTER)
+        self.assertIsNone(parsed["_header_bytes"])
+
+    def test_malicious_argon2_memory_cost_is_rejected(self):
+        # A gigabyte-plus memory_cost used to be fed straight to Argon2, with no
+        # cancel path — the app wedged on Restore. It must be rejected instead.
+        blob = self._blob_with_header({
+            "kdf_name": "argon2id",
+            "kdf_params": {"time_cost": 3, "memory_cost": 100 * 1024 * 1024, "parallelism": 4},
+            "salt": "00" * 16,
+        })
+        # read_header does not derive, so it still parses ...
+        self.assertEqual(backup.read_header(blob)["kdf_name"], "argon2id")
+        # ... but open_blob refuses before the KDF ever allocates.
+        with self.assertRaises(backup.BackupError):
+            backup.open_blob(blob, MASTER)
+
+    def test_malicious_argon2_time_cost_and_parallelism_rejected(self):
+        for params in (
+            {"time_cost": 10 ** 9, "memory_cost": 65536, "parallelism": 4},
+            {"time_cost": 3, "memory_cost": 65536, "parallelism": 10 ** 6},
+        ):
+            blob = self._blob_with_header(
+                {"kdf_name": "argon2id", "kdf_params": params, "salt": "00" * 16})
+            with self.assertRaises(backup.BackupError):
+                backup.open_blob(blob, MASTER)
+
+    def test_pbkdf2_iteration_ceiling_is_enforced(self):
+        blob = self._blob_with_header({
+            "kdf_name": "pbkdf2_sha256",
+            "kdf_params": {"iterations": 10 ** 12},
+            "salt": "00" * 16,
+        })
+        with self.assertRaises(backup.BackupError):
+            backup.open_blob(blob, MASTER)
+
+    def test_unknown_kdf_is_rejected(self):
+        blob = self._blob_with_header(
+            {"kdf_name": "scrypt", "kdf_params": {}, "salt": "00" * 16})
+        with self.assertRaises(backup.BackupError):
+            backup.open_blob(blob, MASTER)
+
+    def test_non_integer_kdf_param_is_rejected(self):
+        blob = self._blob_with_header({
+            "kdf_name": "argon2id",
+            "kdf_params": {"time_cost": "lots", "memory_cost": 65536, "parallelism": 4},
+            "salt": "00" * 16,
+        })
+        with self.assertRaises(backup.BackupError):
+            backup.open_blob(blob, MASTER)
+
     # -- separate-passphrase mode ---------------------------------------
 
     def test_backup_passphrase_mode(self):

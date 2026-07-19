@@ -95,6 +95,14 @@ On its own it is close to a coin flip.
 
 Two things worth knowing before tuning further:
 
+- **Only the login site's own responses are scored.** `webRequest` fires for
+  every request in the tab, including third-party subframes and analytics/ad
+  traffic. `scoreResponse`/`scoreNavigation` ignore any response whose origin is
+  not same-site as the page the form was submitted from — otherwise a stray 401
+  from a subframe would reject the capture, and a stray redirect or
+  session-shaped cookie from a third party would inflate it toward a false
+  "verified". Same-site is same-scheme + same registrable domain (last two
+  labels; an extension has no Public Suffix List).
 - **A redirect back to `/login` scores zero, by design** — that's the standard
   failure pattern, and treating any 302 as success inverts the whole feature.
 - **Fail-closed means silently dropping saves.** Every heuristic that misses
@@ -148,7 +156,7 @@ app register the bridge without you copying an ID by hand. Change that key and
 ```bash
 cd extension
 npm install
-npm test     # 52 assertions
+npm test     # 62 assertions
 ```
 
 The tests run the real background modules against a fake `chrome.*` event bus

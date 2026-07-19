@@ -24,8 +24,14 @@ MAX_USERNAME_LEN = 128
 MAX_PASSWORD_LEN = 1024
 MAX_NOTES_LEN = 2000
 
-# Must start alphanumeric; then alphanumerics, spaces, and . _ @ + : / -
-_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@+:/-]*$")
+# Must start alphanumeric; then alphanumerics, spaces, and . _ @ + : / - , & ( )
+#
+# Real labels are not hostnames: "Shopify (inactive account)", "Acme, Inc." and
+# "Mail & News" are all reasonable things to call an entry. Quotes, semicolons
+# and backslashes stay out — not because the DB needs it (every statement is
+# parameterised) but as deliberate, tested defence-in-depth against
+# SQL-shaped input reaching storage at all.
+_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@+:/,&()-]*$")
 # Usernames/emails: alphanumerics and . _ @ + - (no spaces).
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]*$")
 # Group labels: like service names, plus & for "Banking & Finance".
@@ -50,9 +56,15 @@ def validate_service_name(value: object) -> str:
     if len(value) > MAX_SERVICE_LEN:
         raise ValidationError(f"Service name must be at most {MAX_SERVICE_LEN} characters.")
     if not _SERVICE_RE.fullmatch(value):
+        bad = sorted({c for c in value if not _SERVICE_RE.fullmatch("A" + c)})
+        # Name the offending characters: "contains a character that isn't
+        # allowed" sends people hunting through their own text.
+        shown = " ".join(repr(c) for c in bad[:5])
         raise ValidationError(
-            "Service name may only contain letters, digits, spaces, and . _ @ + : / - "
-            "and must start with a letter or digit."
+            f"Service name can't contain {shown}. "
+            "Letters, digits, spaces and . _ @ + : / - , & ( ) are fine."
+            if bad else
+            "Service name must start with a letter or digit."
         )
     return value
 

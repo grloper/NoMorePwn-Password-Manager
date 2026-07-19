@@ -172,6 +172,277 @@ class ViewSmokeTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class BackgroundTaskTests(unittest.TestCase):
+    """`run_async` must deliver its callback without the caller holding the Task.
+
+    It did not. Callers write `workers.run_async(work, done)` and drop the
+    return value, so the Task and its `_Signals` QObject became unreachable
+    immediately; if a GC landed before the worker finished, `done` never ran
+    and the work could be cut short. That is how the breach scan came to sit
+    at "Scanning… 17/17" forever while reporting nothing.
+    """
+
+    def _pump(self, predicate, seconds=10.0):
+        import time
+
+        deadline = time.time() + seconds
+        while time.time() < deadline and not predicate():
+            QApplication.processEvents()
+            time.sleep(0.01)
+        return predicate()
+
+    def test_callback_fires_when_the_task_is_discarded(self):
+        from nomorepwn_app import workers
+
+        got = []
+        workers.run_async(lambda: "value", got.append)   # return value dropped
+        self.assertTrue(self._pump(lambda: bool(got)),
+                        "callback never fired for a discarded Task")
+        self.assertEqual(got, ["value"])
+
+    def test_callback_survives_a_collection_mid_flight(self):
+        import gc
+        import time
+
+        from nomorepwn_app import workers
+
+        got = []
+
+        def slow():
+            time.sleep(0.3)
+            return "late"
+
+        workers.run_async(slow, got.append)
+        gc.collect()
+        self.assertTrue(self._pump(lambda: bool(got)),
+                        "a garbage collection lost the callback")
+
+    def test_long_task_runs_to_completion(self):
+        import gc
+        import time
+
+        from nomorepwn_app import workers
+
+        steps = []
+
+        def work():
+            for i in range(15):
+                time.sleep(0.01)
+                steps.append(i)
+            return "done"
+
+        got = []
+        workers.run_async(work, got.append)
+        for _ in range(4):
+            gc.collect()
+            QApplication.processEvents()
+        self.assertTrue(self._pump(lambda: bool(got)))
+        self.assertEqual(len(steps), 15, "the worker was cut short")
+
+    def test_error_callback_also_fires_when_discarded(self):
+        from nomorepwn_app import workers
+
+        errs = []
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        workers.run_async(boom, lambda r: None, errs.append)
+        self.assertTrue(self._pump(lambda: bool(errs)))
+        self.assertIsInstance(errs[0], RuntimeError)
+
+    def test_finished_tasks_do_not_accumulate(self):
+        from nomorepwn_app import workers
+
+        got = []
+        for i in range(5):
+            workers.run_async(lambda i=i: i, got.append)
+        self.assertTrue(self._pump(lambda: len(got) == 5), str(got))
+        self.assertTrue(self._pump(lambda: not workers._INFLIGHT, 3.0),
+                        f"keep-alive set leaked {len(workers._INFLIGHT)} tasks")
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class BreachScanTests(unittest.TestCase):
+    """The bulk scan must always surface its findings."""
+
+    def setUp(self):
+        from nomorepwn.settings import Settings
+        from nomorepwn_app import theme
+        from nomorepwn_app.context import AppContext
+        from nomorepwn_app.util import ClipboardManager
+
+        theme.set_active(theme.get_palette("dark"))
+        self.tmp = tempfile.mkdtemp()
+        self._real_db_path = config_module.DB_PATH
+        config_module.DB_PATH = Path(self.tmp) / "vault.db"
+        vault.create_vault(config_module.DB_PATH, MASTER)
+        self.vault = vault.Vault.unlock(config_module.DB_PATH, MASTER)
+        self.vault.add_credential("a.com", "u", "breached-pw")
+        self.vault.add_credential("b.com", "u", "clean-pw")
+
+        self.toasts: list[tuple[str, str]] = []
+
+        class _Toast:
+            def show(_s, text, kind="info", ms=2000):
+                self.toasts.append((kind, text))
+
+        self.ctx = AppContext(
+            settings=Settings(), toast=_Toast(), clipboard=ClipboardManager(),
+            notify=lambda t, m: None, get_vault=lambda: self.vault,
+        )
+
+        from nomorepwn import leakcheck
+        self._real_check = leakcheck.check_password
+        leakcheck.check_password = lambda pw, timeout=10: 7 if pw == "breached-pw" else 0
+
+    def tearDown(self):
+        from nomorepwn import leakcheck
+        leakcheck.check_password = self._real_check
+        self.vault.lock()
+        config_module.DB_PATH = self._real_db_path
+
+    def _pump(self, predicate, seconds=15.0):
+        import time
+
+        deadline = time.time() + seconds
+        while time.time() < deadline and not predicate():
+            QApplication.processEvents()
+            time.sleep(0.01)
+        return predicate()
+
+    def test_scan_completes_and_reports(self):
+        from nomorepwn_app.view_audit import AuditView
+
+        view = AuditView(self.ctx)
+        view.set_vault(self.vault)
+        view._render_report({"total": 2, "no_mfa": [], "stale": [], "weak": [],
+                             "reused": [], "strengths": {}, "breached": []})
+        view._scan_breaches()
+
+        self.assertTrue(
+            self._pump(lambda: view.breach_btn.text() == "Scan all for breaches"),
+            f"scan never finished — button stuck at {view.breach_btn.text()!r}")
+        self.assertEqual(view.card_breached.value.text(), "1")
+        self.assertTrue(self.toasts, "no result was reported to the user")
+
+    def test_findings_are_not_discarded_when_scanned_before_the_first_refresh(self):
+        """Clicking Scan on a freshly opened dashboard used to throw the result away."""
+        from nomorepwn_app.view_audit import AuditView
+
+        view = AuditView(self.ctx)
+        view.set_vault(self.vault)
+        self.assertIsNone(view._report)
+
+        view._scan_breaches()
+        self.assertTrue(self._pump(lambda: view.card_breached.value.text() == "1"),
+                        f"breached card shows {view.card_breached.value.text()!r}")
+
+    def test_a_later_refresh_keeps_the_findings(self):
+        from nomorepwn_app.view_audit import AuditView
+
+        view = AuditView(self.ctx)
+        view.set_vault(self.vault)
+        view._scan_breaches()
+        self.assertTrue(self._pump(lambda: view.card_breached.value.text() == "1"))
+
+        view.refresh()
+        self.assertTrue(self._pump(lambda: view.card_breached.value.text() == "1"),
+                        "a refresh downgraded 'breached' back to zero")
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class CloseDialogTests(unittest.TestCase):
+    """The X button's prompt — every path must actually do something.
+
+    `_on_close_requested` compared `dlg.exec()` against `dlg.Accepted`. PySide6
+    does not expose that enum on the *instance* (6.11 raises AttributeError),
+    and an exception inside a slot is swallowed — so pressing X and choosing
+    either option silently did nothing at all, with no error anywhere. The
+    tray's Quit kept working because it calls `quit()` directly, which is
+    exactly why this went unnoticed.
+    """
+
+    def setUp(self):
+        from nomorepwn_app import theme
+        theme.set_active(theme.get_palette("dark"))
+
+    def test_dialog_code_is_reachable_the_way_the_controller_reads_it(self):
+        from PySide6.QtWidgets import QDialog
+
+        # The class form must work...
+        self.assertEqual(int(QDialog.DialogCode.Accepted), 1)
+        # ...and the instance form must NOT be relied on, because it raises.
+        dlg = QDialog()
+        self.assertFalse(hasattr(dlg, "Accepted"),
+                         "PySide6 now exposes QDialog.Accepted on instances — "
+                         "the comment in controller._on_close_requested is stale")
+
+    def test_choosing_quit_accepts_the_dialog(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog
+
+        from nomorepwn.settings import CLOSE_QUIT
+        from nomorepwn_app.dialogs import CloseChoiceDialog
+
+        dlg = CloseChoiceDialog(None)
+        QTimer.singleShot(0, lambda: dlg.quit_card.clicked.emit())
+        result = dlg.exec()
+
+        self.assertEqual(dlg.choice, CLOSE_QUIT)
+        # The controller's exact condition must not bail out.
+        self.assertFalse(result != QDialog.DialogCode.Accepted or dlg.choice is None,
+                         "the controller would return early and never quit")
+
+    def test_choosing_tray_accepts_the_dialog(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog
+
+        from nomorepwn.settings import CLOSE_TRAY
+        from nomorepwn_app.dialogs import CloseChoiceDialog
+
+        dlg = CloseChoiceDialog(None)
+        QTimer.singleShot(0, lambda: dlg.tray_card.clicked.emit())
+        result = dlg.exec()
+        self.assertEqual(dlg.choice, CLOSE_TRAY)
+        self.assertEqual(result, QDialog.DialogCode.Accepted)
+
+    def test_cancelling_is_not_accepted(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog
+
+        from nomorepwn_app.dialogs import CloseChoiceDialog
+
+        dlg = CloseChoiceDialog(None)
+        QTimer.singleShot(0, dlg.reject)
+        result = dlg.exec()
+        self.assertNotEqual(result, QDialog.DialogCode.Accepted)
+        self.assertIsNone(dlg.choice)
+
+    def test_no_view_reads_a_dialog_enum_off_an_instance(self):
+        """Smoke alarm, not a proof: scan for the pattern that broke this.
+
+        `something.exec() != something.Accepted` raises AttributeError at
+        runtime and the slot swallows it. Catch it in source instead.
+        """
+        import re
+
+        app_dir = Path(__file__).resolve().parent.parent / "nomorepwn_app"
+        # Owners that legitimately carry the enum as a class attribute.
+        allowed = {"QDialog", "QMessageBox", "QFileDialog", "DialogCode"}
+        pattern = re.compile(r"(\w+)\.(?:Accepted|Rejected)\b")
+        offenders = []
+        for path in app_dir.glob("*.py"):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#", 1)[0]        # ignore prose in comments
+                for owner in pattern.findall(code):
+                    if owner not in allowed:
+                        offenders.append(f"{path.name}:{lineno}: {line.strip()}")
+        self.assertEqual(offenders, [], "read the enum off the class, not an instance:\n"
+                                        + "\n".join(offenders))
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
 class CredentialGroupUiTests(unittest.TestCase):
     """The group picker and the grouped list, driven headlessly."""
 
@@ -366,6 +637,95 @@ class CredentialGroupUiTests(unittest.TestCase):
         items = [view.list.itemWidget(view.list.item(i))
                  for i in range(view.list.count())]
         self.assertEqual(len([i for i in items if isinstance(i, _ItemRow)]), 1)
+
+    def test_editor_looks_different_when_adding_versus_editing(self):
+        """Add and edit used to be visually identical."""
+        cid = self.vault.add_credential("a.com", "u", "pw-123456")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+
+        ed = self._editor()
+        ed.load_new()
+        add_state = (ed.mode_badge.text(), ed.title.text(),
+                     ed.save_btn.text(), ed.cancel_btn.text())
+        ed.load_edit(cred)
+        edit_state = (ed.mode_badge.text(), ed.title.text(),
+                      ed.save_btn.text(), ed.cancel_btn.text())
+
+        self.assertNotEqual(add_state, edit_state, "add and edit look the same")
+        self.assertEqual(add_state[0], "NEW")
+        self.assertEqual(edit_state[0], "EDITING")
+        self.assertIn("Discard new item", add_state[3])
+
+    def test_invalid_service_name_shows_a_persistent_inline_error(self):
+        """A toast auto-dismisses; that is how a rejected save gets missed."""
+        ed = self._editor()
+        ed.load_new()
+        ed.service.setText("bad;name")          # ';' is still refused
+        ed.username.setText("alice")
+        ed.password.setText("pw-123456")
+        ed._save()
+
+        self.assertEqual(self.vault.list_credentials(), [], "saved despite being invalid")
+        self.assertFalse(ed.error_bar.isHidden(), "no inline error was shown")
+        self.assertIn(";", ed.error_bar.text(),
+                      f"error does not name the offending character: {ed.error_bar.text()!r}")
+
+    def test_fixing_the_error_clears_the_bar_and_saves(self):
+        ed = self._editor()
+        ed.load_new()
+        ed.service.setText("bad;name")
+        ed.username.setText("alice")
+        ed.password.setText("pw-123456")
+        ed._save()
+        self.assertFalse(ed.error_bar.isHidden())
+
+        ed.service.setText("Shopify (inactive account)")
+        ed._save()
+        self.assertTrue(ed.error_bar.isHidden(), "error bar survived a successful save")
+        self.assertEqual(len(self.vault.list_credentials()), 1)
+
+    def test_parenthesised_service_names_are_accepted(self):
+        """The exact name that was rejected in the field."""
+        ed = self._editor()
+        ed.load_new()
+        ed.service.setText("Shopify (inactive account)")
+        ed.username.setText("alice")
+        ed.password.setText("pw-123456")
+        ed._save()
+        self.assertEqual([c["service_name"] for c in self.vault.list_credentials()],
+                         ["Shopify (inactive account)"])
+
+    def test_an_open_item_can_be_closed(self):
+        from nomorepwn_app.view_vault import VaultView
+
+        self.vault.add_credential("a.com", "u", "pw-123456")
+        view = VaultView(self.ctx)
+        view.set_vault(self.vault)
+        cred = self.vault.list_credentials()[0]
+
+        view._select_by_id(cred["id"])
+        view.detail.show_credential(cred)
+        view.stack.setCurrentIndex(1)
+        self.assertEqual(view.stack.currentIndex(), 1)
+
+        view.close_item()
+        self.assertEqual(view.stack.currentIndex(), 0, "did not return to the empty state")
+        self.assertIsNone(view._selected_id, "selection was left behind")
+        self.assertEqual(view.list.selectedItems(), [], "row stayed highlighted")
+
+    def test_closing_then_reopening_the_same_item_works(self):
+        from nomorepwn_app.view_vault import VaultView
+
+        self.vault.add_credential("a.com", "u", "pw-123456")
+        view = VaultView(self.ctx)
+        view.set_vault(self.vault)
+        cred = self.vault.list_credentials()[0]
+
+        view._select_by_id(cred["id"])
+        view.close_item()
+        # Re-selecting must open it again, not be swallowed as a no-op.
+        view._select_by_id(cred["id"])
+        self.assertEqual(view._selected_id, cred["id"])
 
     def test_list_renders_group_headers_above_their_items(self):
         from PySide6.QtCore import Qt

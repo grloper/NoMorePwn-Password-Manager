@@ -69,6 +69,7 @@ class CredentialDetail(QWidget):
     edit_requested = Signal(dict)
     deleted = Signal()
     changed = Signal()
+    closed = Signal()     # user dismissed the item; show the empty state
 
     def __init__(self, get_vault: Callable[[], "vault.Vault"], ctx: AppContext, parent=None):
         super().__init__(parent)
@@ -129,6 +130,11 @@ class CredentialDetail(QWidget):
         pills.addStretch(1)
         title_col.addLayout(pills)
         header.addLayout(title_col, 1)
+        # Nothing used to dismiss an item: the pane always showed one, whether
+        # or not you wanted it open.
+        close_btn = components.icon_button("x", "Close (Esc)", 18)
+        close_btn.clicked.connect(self.closed.emit)
+        header.addWidget(close_btn, 0, Qt.AlignTop)
         self._lay.addLayout(header)
 
         # -- Fields --------------------------------------------------

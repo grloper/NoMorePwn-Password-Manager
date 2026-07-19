@@ -37,7 +37,7 @@ available separately and does take POSIX syntax.
 ## Commands
 
 ```
-python -m unittest discover tests -v      # 177 tests, ~8s — from repo root
+python -m unittest discover tests -v      # 196 tests, ~9s — from repo root
 cd extension; npm install; npm test       # 52 checks, ~22s — NOT `npm ci` (lockfile gitignored)
 python NoMorePwn.py                       # runs against the REAL vault (see above)
 pip install -r requirements-build.txt     # covers both test and build deps
@@ -57,9 +57,11 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
 
 1. **AAD is bound to the row's immutable `uuid`.** `_password_aad`/`_notes_aad` (`vault.py:64-69`)
    produce `cred:{uuid}:password` / `cred:{uuid}:notes`. Never re-bind to `id`, `service_name`, or
-   `username` — `update_credential` renames those. Never change the literal format: **there is no
-   rekey/migration code anywhere in the repo**, so a change makes every existing vault permanently
-   undecryptable. No test asserts this; the suite stays green if you break it.
+   `username` — `update_credential` renames those. Never change the literal format: schema
+   migrations exist (`db.migrate`, invariant 16) but they deliberately never touch ciphertext, and
+   **there is still no rekey code anywhere in the repo** — so changing the AAD format makes every
+   existing vault permanently undecryptable. No test asserts the format itself; the suite stays
+   green if you break it.
 2. **Never change `_VERIFIER_PLAINTEXT` / `_VERIFIER_AAD`** (`crypto.py:57-58`). A failed verifier
    surfaces as "Master password is incorrect." — indistinguishable from a typo, so the user never
    learns their vault was bricked.
@@ -161,7 +163,10 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   tampering returns a clean bill of health. History rows are checksum-only, never GCM-verified.
 - `validate_*` **returns** the cleaned value — reassign it. Identifiers are `.strip()`ed before the
   length check; passwords and notes deliberately are not. Adding `.strip()` to `validate_password`
-  is a security bug. Allowlists are ASCII-only (`café.com`, `日本.com`, `_alice` all rejected).
+  is a security bug — surrounding whitespace is *reported* by `inspect_password_whitespace` and
+  removed only if the user says so. Allowlists are ASCII-only (`café.com`, `日本.com`, `_alice`
+  all rejected). Service names allow `, & ( )` (real labels like `Shopify (inactive account)`);
+  quotes and `;` stay rejected as tested defence-in-depth, not because the DB needs it.
 - `SCHEMA_VERSION` is **no longer write-only** (it was until v2). `init_schema` still only runs
   inside `create_vault`, so existing vaults are upgraded by `db.migrate`, which
   `vault.migrate_schema` runs from `Vault.unlock` — *after* the verifier passes, so a wrong
@@ -205,7 +210,22 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
 
 **App / UI**
 - `run_async(fn, on_done, on_error, *args)` — positional args come *after* the callbacks. Bind with
-  a lambda or `partial`; never use the `*args` tail.
+  a lambda or `partial`; never use the `*args` tail. The returned `Task` does **not** need to be
+  kept alive by the caller — `workers._INFLIGHT` holds it until a signal fires. **Never remove
+  that set or the `setAutoDelete(False)` beside it.** Without them the Task and its `_Signals`
+  QObject are unreachable the moment `run_async` returns, so a GC landing mid-run silently drops
+  the callback *and* can cut the work short. That is what left the breach scan sitting at
+  "Scanning… 17/17" forever while reporting nothing. It is a race, so it hides in short tasks and
+  bites long ones. Guarded by `tests/test_views.py::BackgroundTaskTests`.
+- **Never read a Qt enum off an instance** (`dlg.Accepted`). PySide6 6.11 exposes `DialogCode` only
+  on the class, so `dlg.Accepted` raises `AttributeError` — and an exception inside a slot is
+  swallowed, so the widget just does nothing, with no error anywhere. That is how the X button's
+  "Quit completely" became a no-op while the tray's Quit kept working (it calls `quit()` directly,
+  with no dialog). Use `QDialog.DialogCode.Accepted`. Guarded by
+  `tests/test_views.py::CloseDialogTests`, including a source scan.
+- `AuditView` keeps `self._breached` separately from `self._report`. Scan results used to render
+  only `if self._report is not None`, so scanning before the dashboard's first refresh computed
+  the findings and threw them away.
 - The launch-time integrity sweep passes `lambda e: None` as its error handler. A silent sweep is
   **not** evidence of an untampered vault. There is no logger anywhere in the package.
 - `_on_change()` must stay the last statement in `SettingsView._save` — it can destroy the view

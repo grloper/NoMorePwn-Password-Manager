@@ -165,6 +165,7 @@ class VaultView(QWidget):
         root.addWidget(right, 1)
 
         self.detail.edit_requested.connect(self._edit)
+        self.detail.closed.connect(self.close_item)
         self.detail.deleted.connect(self._on_deleted)
         self.detail.changed.connect(lambda: self.refresh(self._selected_id))
         self.editor.saved.connect(self._on_saved)
@@ -251,6 +252,27 @@ class VaultView(QWidget):
                 if cred["id"] == self._selected_id:
                     self.list.setCurrentItem(item)
         self.list.blockSignals(False)
+
+    def close_item(self) -> None:
+        """Dismiss the open item and go back to the empty state.
+
+        Deselects in the list too, otherwise the row stays highlighted and
+        clicking it again would not re-open it.
+        """
+        self._selected_id = None
+        self.list.blockSignals(True)
+        self.list.clearSelection()
+        self.list.setCurrentItem(None)
+        self.list.blockSignals(False)
+        self.stack.setCurrentIndex(0)
+
+    def keyPressEvent(self, event) -> None:
+        # Esc closes the open item, but only when the editor isn't in front —
+        # there it would be mistaken for "discard my changes".
+        if event.key() == Qt.Key_Escape and self.stack.currentIndex() == 1:
+            self.close_item()
+            return
+        super().keyPressEvent(event)
 
     def _toggle_group(self, label: str) -> None:
         """Collapse or expand one group. Session-scoped, not persisted."""

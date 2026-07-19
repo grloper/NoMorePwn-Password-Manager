@@ -6,8 +6,8 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, QStringListModel, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QCompleter, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea,
-    QVBoxLayout, QWidget,
+    QComboBox, QCompleter, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from nomorepwn import groups, strength, validation, vault
@@ -35,13 +35,31 @@ class CredentialEditor(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header
+        # Header. The mode badge is the point: adding and editing used to look
+        # identical, so people could not tell whether they were creating a new
+        # entry or changing an existing one.
         header = QHBoxLayout()
         header.setContentsMargins(28, 24, 28, 12)
         self.title = components.heading("Add item", "H2")
         header.addWidget(self.title)
+        self.mode_badge = QLabel("NEW")
+        self.mode_badge.setAlignment(Qt.AlignCenter)
+        header.addWidget(self.mode_badge)
         header.addStretch(1)
         root.addLayout(header)
+
+        # A coloured rule under the header, tinted per mode.
+        self.mode_rule = QFrame()
+        self.mode_rule.setFixedHeight(3)
+        root.addWidget(self.mode_rule)
+
+        # Inline, persistent validation error. A toast auto-dismisses, which is
+        # how a rejected save gets missed entirely.
+        self.error_bar = QLabel("")
+        self.error_bar.setWordWrap(True)
+        self.error_bar.setVisible(False)
+        self.error_bar.setContentsMargins(28, 8, 28, 0)
+        root.addWidget(self.error_bar)
 
         # Scrollable form body
         scroll = QScrollArea()
@@ -166,6 +184,8 @@ class CredentialEditor(QWidget):
         footer.addWidget(self.save_btn)
         root.addLayout(footer)
 
+        self._apply_mode_style()   # needs save_btn/cancel_btn to exist
+
         # Wiring
         self.password.textChanged.connect(self._update_strength)
         # Suggest a group once they stop typing the service, not per keystroke.
@@ -178,6 +198,38 @@ class CredentialEditor(QWidget):
         self.save_btn.clicked.connect(self._save)
 
     # ------------------------------------------------------------------
+
+    def _apply_mode_style(self) -> None:
+        """Make 'adding' and 'editing' unmistakably different at a glance."""
+        p = theme.active()
+        adding = self._mode == "add"
+        accent = p.success if adding else p.primary
+        self.title.setText("Add new item" if adding else "Edit item")
+        self.mode_badge.setText("NEW" if adding else "EDITING")
+        self.mode_badge.setStyleSheet(
+            f"color:{p.on_primary if not adding else '#06301B'};"
+            f" background:{accent}; border-radius:8px;"
+            f" padding:2px 10px; font-size:11px; font-weight:800;"
+            f" letter-spacing:0.6px;"
+        )
+        self.mode_rule.setStyleSheet(f"background:{accent}; border:none;")
+        self.save_btn.setText("Create item" if adding else "Save changes")
+        # "Cancel" is ambiguous next to a half-filled form — say what it drops.
+        self.cancel_btn.setText("Discard new item" if adding else "Discard changes")
+
+    def _show_error(self, message: str) -> None:
+        """Show a validation problem inline, and keep it on screen."""
+        p = theme.active()
+        self.error_bar.setText(f"⚠  {message}")
+        self.error_bar.setStyleSheet(
+            f"color:{p.danger}; background:{p.danger_soft};"
+            f" border:1px solid {p.danger}; border-radius:8px; padding:8px 12px;"
+        )
+        self.error_bar.setVisible(True)
+
+    def _clear_error(self) -> None:
+        self.error_bar.clear()
+        self.error_bar.setVisible(False)
 
     def _refresh_identifiers(self) -> None:
         """Reload the autocomplete list from the vault."""
@@ -231,7 +283,8 @@ class CredentialEditor(QWidget):
     def load_new(self) -> None:
         self._mode = "add"
         self._cred_id = None
-        self.title.setText("Add item")
+        self._apply_mode_style()
+        self._clear_error()
         self.service.clear()
         self.username.clear()
         self.password.clear()
@@ -249,7 +302,8 @@ class CredentialEditor(QWidget):
     def load_edit(self, cred: dict) -> None:
         self._mode = "edit"
         self._cred_id = cred["id"]
-        self.title.setText("Edit item")
+        self._apply_mode_style()
+        self._clear_error()
         vlt = self._get_vault()
         try:
             current_pw = vlt.reveal_password(cred["id"]) if vlt else ""
@@ -334,9 +388,11 @@ class CredentialEditor(QWidget):
                     password = finding.cleaned
                     self.password.setText(password)
 
+        self._clear_error()
         try:
             if self._mode == "add":
                 if not password:
+                    self._show_error("Enter or generate a password first.")
                     self._ctx.toast.show("Enter or generate a password first.", "error")
                     return
                 vlt.add_credential(service, username, password, notes, mfa,
@@ -346,11 +402,15 @@ class CredentialEditor(QWidget):
                                       group_name=group_name, alt_login=alt_login)
                 if password != self._original.get("password", ""):
                     if not password:
+                        self._show_error("Password cannot be empty.")
                         self._ctx.toast.show("Password cannot be empty.", "error")
                         return
                     vlt.update_password(self._cred_id, password)
         except (validation.ValidationError, vault.VaultError) as exc:
-            self._ctx.toast.show(str(exc), "error", 4000)
+            # Inline *and* a toast: the inline bar stays until it is fixed, so
+            # a rejected save can't be missed and lost on Cancel.
+            self._show_error(str(exc))
+            self._ctx.toast.show(str(exc), "error", 5000)
             return
 
         self._ctx.toast.show(

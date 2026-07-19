@@ -17,7 +17,7 @@ Background behaviour
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
@@ -204,7 +204,11 @@ class AppController(QObject):
         action = self.settings.close_action
         if action == CLOSE_ASK:
             dlg = CloseChoiceDialog(self.window)
-            if dlg.exec() != dlg.Accepted or dlg.choice is None:
+            # QDialog.DialogCode.Accepted, never `dlg.Accepted`: PySide6 does
+            # not expose the enum on the *instance* (6.11 raises AttributeError),
+            # and an exception here is swallowed by the slot — so the X button
+            # silently did nothing at all, for both choices.
+            if dlg.exec() != QDialog.DialogCode.Accepted or dlg.choice is None:
                 return
             action = dlg.choice
             if dlg.remembered():

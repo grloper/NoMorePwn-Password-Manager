@@ -89,6 +89,9 @@ class AuditView(QWidget):
         self._ctx = ctx
         self._vault: vault.Vault | None = None
         self._report: dict | None = None
+        # Findings from the last breach scan, kept independently of the report
+        # so a scan started before the first refresh isn't thrown away.
+        self._breached: list[dict] = []
         # Bumped per scan so a stale worker can't clobber a newer one's results.
         self._scan_seq = 0
 
@@ -148,6 +151,9 @@ class AuditView(QWidget):
 
     def set_vault(self, vlt: "vault.Vault | None") -> None:
         self._vault = vlt
+        # Findings belong to the vault they came from.
+        self._breached = []
+        self._report = None
 
     def refresh(self) -> None:
         if self._vault is None:
@@ -159,7 +165,10 @@ class AuditView(QWidget):
             creds = vlt.list_credentials()
             report = {
                 "total": len(creds), "no_mfa": [], "stale": [], "weak": [],
-                "reused": [], "strengths": {}, "breached": [],
+                "reused": [], "strengths": {},
+                # Carry forward the last scan's findings; a refresh must not
+                # quietly downgrade "breached" to zero.
+                "breached": list(self._breached),
             }
             seen: dict[str, list] = {}
             for c in creds:
@@ -331,9 +340,16 @@ class AuditView(QWidget):
             if seq != self._scan_seq or self._vault is None:
                 return  # superseded, or the vault locked while we scanned
 
+            # Keep the findings whatever the dashboard's state — a scan the
+            # user waited through must never be silently discarded.
+            self._breached = result["breached"]
             if self._report is not None:
-                self._report["breached"] = result["breached"]
+                self._report["breached"] = self._breached
                 self._render_report(self._report)
+            else:
+                # Scanned before the first refresh finished; build the report
+                # now so the count actually appears.
+                self.refresh()
 
             n = len(result["breached"])
             failed = result["failed"]

@@ -115,14 +115,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Response headers: status codes, Location, Set-Cookie.
-// `extraHeaders` is required for Set-Cookie to be visible at all.
+// `extraHeaders` is required for Chrome to see Set-Cookie; Firefox throws on it.
+const extraInfoSpec = ['responseHeaders'];
+if (!navigator.userAgent.includes('Firefox')) extraInfoSpec.push('extraHeaders');
+
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0 || !store.has(details.tabId)) return;
     applyScore(details.tabId, scoreResponse(store.get(details.tabId), details));
   },
   { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
-  ['responseHeaders', 'extraHeaders'],
+  extraInfoSpec,
 );
 
 // A committed navigation confirms the tab actually landed somewhere.

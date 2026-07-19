@@ -17,6 +17,7 @@ from .view_unlock import UnlockView
 
 class MainWindow(QMainWindow):
     vault_opened = Signal(object)
+    vault_created = Signal(object)   # a brand-new vault (first run) — offer recovery
     lock_requested = Signal()
     close_requested = Signal()
     settings_changed = Signal()
@@ -47,7 +48,10 @@ class MainWindow(QMainWindow):
     def show_create(self) -> None:
         if self._create is None:
             self._create = CreateView(self._db_path, self.toast)
+            # vault_opened first (shows the shell, sets the live vault), then
+            # vault_created (the first-run recovery nudge, which needs it).
             self._create.created.connect(self.vault_opened.emit)
+            self._create.created.connect(self.vault_created.emit)
             self.stack.addWidget(self._create)
         self.stack.setCurrentWidget(self._create)
 

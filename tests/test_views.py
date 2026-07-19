@@ -1055,6 +1055,48 @@ class RecoveryUiTests(unittest.TestCase):
         self.assertIn("totp_secret", result)
         self.assertTrue(result["totp_uri"].startswith("otpauth://"))
 
+    def test_qr_pixmap_renders_when_qrcode_available(self):
+        try:
+            import qrcode  # noqa: F401
+        except ImportError:
+            self.skipTest("qrcode not installed")
+        from nomorepwn_app.recovery_dialog import qr_pixmap
+        pix = qr_pixmap("otpauth://totp/NoMorePwn:v?secret=ABCDEFGH&issuer=NoMorePwn")
+        self.assertIsNotNone(pix)
+        self.assertFalse(pix.isNull())
+
+    def test_kit_dialog_totp_populates_qr_and_steps(self):
+        from nomorepwn_app.recovery_dialog import RecoveryKitDialog
+        from nomorepwn import recovery
+
+        dlg = RecoveryKitDialog(None, lambda: self.vault, self.ctx)
+        dlg.mode.setCurrentIndex(dlg.mode.findData(recovery.MODE_KIT_TOTP))
+        dlg._on_generate()
+        self.assertTrue(dlg.code_lbl.text())
+        self.assertTrue(dlg.seed_lbl.text())
+        self.assertIn("all three", dlg.steps_lbl.text())
+        try:
+            import qrcode  # noqa: F401
+            self.assertFalse(dlg.qr_lbl.pixmap().isNull())
+        except ImportError:
+            pass
+
+    def test_first_run_offer_is_noop_without_a_vault(self):
+        from nomorepwn_app.recovery_dialog import offer_recovery_setup
+        from nomorepwn_app.context import AppContext
+        from nomorepwn.settings import Settings
+        from nomorepwn_app.util import ClipboardManager
+
+        ctx = AppContext(settings=Settings(), toast=self.ctx.toast,
+                         clipboard=ClipboardManager(), notify=lambda t, m: None,
+                         get_vault=lambda: None)
+        # Must return immediately (no modal) when the vault is locked/absent.
+        offer_recovery_setup(None, ctx)
+
+    def test_main_window_exposes_vault_created_signal(self):
+        from nomorepwn_app.main_window import MainWindow
+        self.assertTrue(hasattr(MainWindow, "vault_created"))
+
     def test_recover_dialog_recovers_and_rekeys(self):
         from nomorepwn_app.recovery_dialog import RecoverDialog
         from nomorepwn import recovery

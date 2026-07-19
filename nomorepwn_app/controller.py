@@ -82,6 +82,7 @@ class AppController(QObject):
 
         # Signals
         self.window.vault_opened.connect(self._on_vault_opened)
+        self.window.vault_created.connect(self._on_vault_created)
         self.window.lock_requested.connect(lambda: self.lock(manual=True))
         self.window.close_requested.connect(self._on_close_requested)
         self.window.settings_changed.connect(self._on_settings_changed)
@@ -133,6 +134,12 @@ class AppController(QObject):
         self._reset_autolock()
         self._run_integrity_sweep(vlt)
         self.backups.ensure_initial()
+
+    def _on_vault_created(self, vlt: "vault.Vault") -> None:
+        """A vault was just created (first run). Offer to set up recovery so a
+        forgotten master password isn't fatal — the shell is already showing."""
+        from .recovery_dialog import offer_recovery_setup
+        offer_recovery_setup(self.window, self.ctx)
 
     def _run_integrity_sweep(self, vlt: "vault.Vault") -> None:
         def done(issues):

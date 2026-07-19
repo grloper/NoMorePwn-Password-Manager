@@ -42,7 +42,11 @@ class UnlockView(QWidget):
         col.addWidget(title)
         sub = components.muted("Enter your master password to unlock the vault.")
         sub.setAlignment(Qt.AlignCenter)
-        col.addWidget(sub, 0, Qt.AlignHCenter)
+        # No alignment flag: an aligned layout item is sized to sizeHint() and
+        # never asked for heightForWidth(), which starves a word-wrapped label
+        # into a one-line box that its text then overflows. setAlignment above
+        # already centres the text.
+        col.addWidget(sub)
 
         card = components.Card(padding=22)
         card.add(components.field_label("Master password"))

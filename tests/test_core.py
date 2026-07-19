@@ -19,7 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nomorepwn import (
-    backup, crypto, generator, groups, leakcheck, strength, updater, validation, vault,
+    backup, crypto, generator, groups, leakcheck, recovery, strength, updater,
+    validation, vault,
 )
 from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
@@ -1482,6 +1483,223 @@ class LeakCheckRetryTests(unittest.TestCase):
         ])
         leakcheck.check_password("pw")
         self.assertTrue(all(s <= 8.0 for s in self.slept), self.slept)
+
+
+class RekeyTests(unittest.TestCase):
+    """Vault.rekey: re-encrypt every secret under a new master password."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.db_path = self.dir / "vault.db"
+        vault.create_vault(self.db_path, MASTER)
+        self.vault = vault.Vault.unlock(self.db_path, MASTER)
+        self.cid = self.vault.add_credential(
+            "github.com", "alice", "s3cret-pass", "notes here", True
+        )
+        self.vault.add_credential("gmail.com", "bob", "another-pass")
+        self.vault.update_password(self.cid, "s3cret-pass-v2")  # a second history row
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    NEW = "a whole new master phrase"
+
+    def test_rekey_round_trips_every_secret(self):
+        self.vault.rekey(self.NEW)
+        # The live object now works under the new key ...
+        self.assertEqual(self.vault.reveal_password(self.cid), "s3cret-pass-v2")
+        self.assertEqual(self.vault.reveal_notes(self.cid), "notes here")
+        # ... and so does a fresh unlock with the new password.
+        reopened = vault.Vault.unlock(self.db_path, self.NEW)
+        self.assertEqual(reopened.reveal_password(self.cid), "s3cret-pass-v2")
+        self.assertEqual(reopened.reveal_notes(self.cid), "notes here")
+        gmail = next(c for c in reopened.list_credentials()
+                     if c["service_name"] == "gmail.com")
+        self.assertEqual(reopened.reveal_password(gmail["id"]), "another-pass")
+
+    def test_old_password_no_longer_opens_the_vault(self):
+        self.vault.rekey(self.NEW)
+        with self.assertRaises(vault.InvalidMasterPasswordError):
+            vault.Vault.unlock(self.db_path, MASTER)
+
+    def test_rekey_keeps_integrity_clean(self):
+        self.vault.rekey(self.NEW)
+        reopened = vault.Vault.unlock(self.db_path, self.NEW)
+        # No false tamper alarms: the mirror history row still matches the
+        # current ciphertext (invariant 7) and every blob decrypts.
+        self.assertEqual(reopened.verify_integrity(), [])
+
+    def test_rekey_preserves_history(self):
+        before = self.vault.password_history(self.cid)
+        self.vault.rekey(self.NEW)
+        reopened = vault.Vault.unlock(self.db_path, self.NEW)
+        after = reopened.password_history(self.cid)
+        self.assertEqual(len(after), len(before))
+        self.assertTrue(all(h["checksum_ok"] for h in after))
+
+    def test_pre_rekey_snapshot_is_written_and_opens_with_old_password(self):
+        self.vault.rekey(self.NEW)
+        snap = vault.pre_rekey_backup_path(self.db_path)
+        self.assertTrue(snap.exists())
+        # The snapshot is the untouched pre-rekey vault: still the OLD password.
+        recovered = vault.Vault.unlock(snap, MASTER)
+        self.assertEqual(recovered.reveal_password(self.cid), "s3cret-pass-v2")
+
+    def test_rekey_rejects_a_short_password(self):
+        with self.assertRaises(vault.VaultError):
+            self.vault.rekey("short")
+
+    def test_rekey_rewraps_a_backup_passphrase_key(self):
+        phrase = "a separate backup phrase"
+        self.vault.set_backup_passphrase(phrase)
+        self.vault.rekey(self.NEW)
+        reopened = vault.Vault.unlock(self.db_path, self.NEW)
+        self.assertTrue(reopened.has_backup_passphrase())
+        dest = self.dir / "b.nmpbak"
+        reopened.write_backup(dest)
+        # The backup still opens with the (unchanged) passphrase after a rekey.
+        backup.open_blob(dest.read_bytes(), phrase)
+
+
+class RecoveryKitTests(unittest.TestCase):
+    """Out-of-band Recovery Kit: escrow the master key, recover, rekey."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.db_path = self.dir / "vault.db"
+        vault.create_vault(self.db_path, MASTER)
+        self.vault = vault.Vault.unlock(self.db_path, MASTER)
+        self.cid = self.vault.add_credential(
+            "github.com", "alice", "s3cret-pass", "notes here", True
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    NEW = "recovered master phrase"
+
+    # -- recovery code round-trip ---------------------------------------
+
+    def test_recovery_code_round_trips(self):
+        r = recovery.generate_recovery_key()
+        self.assertEqual(recovery.decode_recovery_code(recovery.encode_recovery_code(r)), r)
+        # Tolerant of spacing/case the user might introduce transcribing it.
+        code = recovery.encode_recovery_code(r)
+        self.assertEqual(recovery.decode_recovery_code(code.lower().replace("-", " ")), r)
+
+    def test_malformed_recovery_code_rejected(self):
+        for bad in ("", "not base32 !!!", "AAAA"):
+            with self.assertRaises(recovery.RecoveryError):
+                recovery.decode_recovery_code(bad)
+
+    # -- kit mode -------------------------------------------------------
+
+    def test_kit_mode_recover_then_rekey(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        self.vault.lock()
+        rv = vault.Vault.unlock_with_recovery(
+            self.db_path, kit["kit_bytes"], kit["recovery_code"]
+        )
+        self.assertEqual(rv.reveal_password(self.cid), "s3cret-pass")
+        self.assertEqual(rv.reveal_notes(self.cid), "notes here")
+        rv.rekey(self.NEW)
+        self.assertEqual(
+            vault.Vault.unlock(self.db_path, self.NEW).reveal_password(self.cid),
+            "s3cret-pass",
+        )
+
+    def test_kit_mode_wrong_code_fails(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        wrong = recovery.encode_recovery_code(recovery.generate_recovery_key())
+        with self.assertRaises(recovery.RecoveryError):
+            vault.Vault.unlock_with_recovery(self.db_path, kit["kit_bytes"], wrong)
+
+    # -- kit + TOTP mode ------------------------------------------------
+
+    def test_kit_totp_needs_both_factors(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT_TOTP)
+        code, seed = kit["recovery_code"], kit["totp_secret"]
+        self.vault.lock()
+        # code alone (no seed) is not enough
+        with self.assertRaises(recovery.RecoveryError):
+            vault.Vault.unlock_with_recovery(self.db_path, kit["kit_bytes"], code)
+        # code + wrong seed is not enough
+        wrong_seed = recovery.generate_totp_secret()
+        with self.assertRaises(recovery.RecoveryError):
+            vault.Vault.unlock_with_recovery(self.db_path, kit["kit_bytes"], code, wrong_seed)
+        # code + correct seed works
+        rv = vault.Vault.unlock_with_recovery(self.db_path, kit["kit_bytes"], code, seed)
+        self.assertEqual(rv.reveal_password(self.cid), "s3cret-pass")
+
+    def test_kit_totp_provisioning_uri_is_offline_otpauth(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT_TOTP)
+        self.assertTrue(kit["totp_uri"].startswith("otpauth://totp/"))
+        self.assertIn("NoMorePwn", kit["totp_uri"])
+
+    def test_verify_totp_accepts_current_rejects_wrong(self):
+        secret = recovery.generate_totp_secret()
+        import pyotp
+        self.assertTrue(recovery.verify_totp(secret, pyotp.TOTP(secret).now()))
+        self.assertFalse(recovery.verify_totp(secret, "000000"))
+
+    # -- binding & tamper -----------------------------------------------
+
+    def test_kit_is_bound_to_its_vault(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        # A second, unrelated vault must reject this kit even with the code.
+        other = self.dir / "other.db"
+        vault.create_vault(other, MASTER)
+        with self.assertRaises(recovery.RecoveryError):
+            vault.Vault.unlock_with_recovery(other, kit["kit_bytes"], kit["recovery_code"])
+
+    def test_tampered_kit_header_fails_to_open(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        blob = bytearray(kit["kit_bytes"])
+        # Flip a byte in the header region (right after magic + length).
+        blob[len(recovery.MAGIC) + 6] ^= 0xFF
+        with self.assertRaises(recovery.RecoveryError):
+            recovery.open_kit(bytes(blob), kit["recovery_code"])
+
+    def test_corrupt_kit_raises_recovery_error(self):
+        for bad in (
+            b"not a kit at all",
+            recovery.MAGIC,                                   # no length field
+            recovery.MAGIC + (5).to_bytes(4, "big") + b"xx",  # claims 5, has 2
+            recovery.MAGIC + (4).to_bytes(4, "big") + b"notj",
+            recovery.MAGIC + (10 ** 9).to_bytes(4, "big") + b"x",
+        ):
+            with self.assertRaises(recovery.RecoveryError):
+                recovery.read_kit_header(bad)
+
+    def test_lazy_vault_id_for_pre_recovery_vaults(self):
+        # A vault created before recovery existed has no vault_id; making a kit
+        # generates one rather than failing.
+        with db.connect(self.db_path) as conn:
+            db.delete_meta(conn, "vault_id")
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        with db.connect(self.db_path) as conn:
+            stored = db.get_meta(conn, "vault_id")
+        self.assertIsNotNone(stored)
+        self.assertEqual(kit["vault_id"], stored)
+
+    # -- the core security property -------------------------------------
+
+    def test_no_recovery_material_touches_vault_or_backup(self):
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT_TOTP)
+        code_raw = kit["recovery_code"].replace("-", "").encode()
+        seed_raw = kit["totp_secret"].encode()
+        secrets_present = [kit["kit_bytes"], code_raw, seed_raw]
+
+        vault_bytes = self.db_path.read_bytes()
+        dest = self.dir / "b.nmpbak"
+        self.vault.write_backup(dest)
+        backup_bytes = dest.read_bytes()
+
+        for needle in secrets_present:
+            self.assertNotIn(needle, vault_bytes, "recovery secret leaked into vault.db")
+            self.assertNotIn(needle, backup_bytes, "recovery secret leaked into .nmpbak")
 
 
 if __name__ == "__main__":

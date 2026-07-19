@@ -12,12 +12,13 @@ its lifetime (the desktop app holds it until Lock, auto-lock, or exit).
 
 from __future__ import annotations
 
+import secrets
 import uuid as uuid_mod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import backup, crypto, db, validation
+from . import backup, crypto, db, recovery, validation
 
 # Meta keys for the optional separate backup passphrase.
 _BK_NAME = "backup_kdf_name"
@@ -102,6 +103,10 @@ def create_vault(db_path: str | Path, master_password: str) -> None:
         db.set_meta(conn, "kdf_salt", salt.hex())
         db.set_meta(conn, "verifier", crypto.make_verifier(key).hex())
         db.set_meta(conn, "created_at", _now_iso())
+        # A random, non-secret vault id. It binds a Recovery Kit to this vault
+        # (a kit can only recover the vault it was made for) and never reveals
+        # anything — it is not derived from the key or the password.
+        db.set_meta(conn, "vault_id", secrets.token_hex(16))
 
 
 def pre_migration_backup_path(db_path: str | Path, from_version: int) -> Path:
@@ -110,16 +115,27 @@ def pre_migration_backup_path(db_path: str | Path, from_version: int) -> Path:
     return path.with_name(f"{path.name}.v{from_version}-premigration")
 
 
+def pre_rekey_backup_path(db_path: str | Path) -> Path:
+    """Where the untouched copy is parked before a rekey (recovery / change
+    password). Sibling of :func:`pre_migration_backup_path`: a rekey rewrites
+    every secret in the file, so an untouched byte-for-byte copy of the vault
+    as it was immediately before is written first and never deleted by the
+    app (only overwritten by the next rekey)."""
+    path = Path(db_path)
+    return path.with_name(f"{path.name}.pre-rekey")
+
+
 def migrate_schema(db_path: str | Path) -> tuple[int, int]:
     """Bring a vault's schema up to date, keeping a copy of the old file.
 
     Returns ``(from_version, to_version)``; equal values mean nothing ran.
 
     The backup is the whole point. A migration failing halfway through on a
-    password vault is unrecoverable — there is no rekey path in this repo, and
-    the user's only other copy may be an encrypted `.nmpbak` they need this
-    same app to open. So an untouched byte-for-byte copy is written *first*,
+    password vault is unrecoverable — a rekey needs a working vault to start
+    from, and the user's only other copy may be an encrypted `.nmpbak` they need
+    this same app to open. So an untouched byte-for-byte copy is written *first*,
     via SQLite's online-backup API rather than a file copy, and left in place.
+    `Vault.rekey` writes its own `<vault>.pre-rekey` copy the same way.
     """
     path = Path(db_path)
     with db.connect(path) as conn:
@@ -181,6 +197,50 @@ class Vault:
         migrate_schema(db_path)
         return cls(db_path, key)
 
+    @classmethod
+    def unlock_with_recovery(
+        cls,
+        db_path: str | Path,
+        kit_bytes: bytes,
+        recovery_code: str,
+        totp_secret: str | None = None,
+    ) -> "Vault":
+        """Open a vault using a Recovery Kit instead of the master password.
+
+        Reconstructs the master key from the kit + recovery code (+ authenticator
+        seed, for a ``kit+totp`` kit), proves it against the vault's verifier,
+        and returns an unlocked vault. The caller **must** then set a new master
+        password via :meth:`rekey` — recovery grants access, not a password.
+
+        Nothing about the kit or its secrets is read from or written to
+        ``vault.db``: the only vault data consulted is the non-secret
+        ``vault_id`` (to confirm the kit belongs here) and the ``verifier``.
+        """
+        if not vault_exists(db_path):
+            raise VaultNotInitializedError(
+                f"No vault found at {db_path}. Create one first."
+            )
+        header = recovery.read_kit_header(kit_bytes)
+        with db.connect(db_path) as conn:
+            vault_id = db.get_meta(conn, "vault_id")
+            verifier_hex = db.get_meta(conn, "verifier")
+        if not vault_id:
+            raise recovery.RecoveryError(
+                "This vault has no recovery id, so no kit can be matched to it."
+            )
+        if header.get("vault_id") != vault_id:
+            raise recovery.RecoveryError(
+                "This recovery kit was made for a different vault."
+            )
+        key = recovery.open_kit(kit_bytes, recovery_code, totp_secret)
+        if not verifier_hex or not crypto.check_verifier(key, bytes.fromhex(verifier_hex)):
+            # The kit opened but its key is not this vault's key (e.g. the vault
+            # was re-created after the kit was made). Indistinguishable, safe.
+            raise recovery.RecoveryError(
+                "Recovery failed: the kit did not reconstruct this vault's key."
+            )
+        return cls(db_path, key)
+
     def lock(self) -> None:
         """Drop the in-memory key. The object is unusable afterwards."""
         self._key = b""
@@ -190,6 +250,128 @@ class Vault:
         """The in-memory master key, for callers that own its lifetime
         (the desktop app holds it until the vault is locked)."""
         return self._key
+
+    # ------------------------------------------------------------------
+    # Master-key recovery & rekey
+    # ------------------------------------------------------------------
+
+    def _ensure_vault_id(self) -> str:
+        """The vault's non-secret id, generated on demand for vaults created
+        before recovery existed."""
+        with db.connect(self.db_path) as conn:
+            vault_id = db.get_meta(conn, "vault_id")
+            if vault_id is None:
+                vault_id = secrets.token_hex(16)
+                db.set_meta(conn, "vault_id", vault_id)
+        return vault_id
+
+    def create_recovery_kit(
+        self, mode: str = recovery.MODE_KIT, account_label: str = "NoMorePwn vault"
+    ) -> dict:
+        """Mint a Recovery Kit for this (unlocked) vault.
+
+        Returns the material to show the user **once** and the ``.nmpkit`` bytes
+        for them to save out of band. Crucially, **none** of it is written to
+        the vault: only the non-secret ``vault_id`` is persisted here. The
+        recovery code, the escrow blob, and (for ``kit+totp``) the authenticator
+        seed exist only in the returned dict and wherever the user stores them.
+        """
+        if mode not in recovery._MODES:
+            raise VaultError(f"Unknown recovery mode: {mode!r}.")
+        vault_id = self._ensure_vault_id()
+        recovery_key = recovery.generate_recovery_key()
+        totp_secret = (
+            recovery.generate_totp_secret() if mode == recovery.MODE_KIT_TOTP else None
+        )
+        kit_bytes = recovery.build_kit(
+            self._key, recovery_key, vault_id, mode, totp_secret
+        )
+        result = {
+            "mode": mode,
+            "vault_id": vault_id,
+            "kit_bytes": kit_bytes,
+            "recovery_code": recovery.encode_recovery_code(recovery_key),
+        }
+        if totp_secret is not None:
+            result["totp_secret"] = totp_secret
+            result["totp_uri"] = recovery.totp_provisioning_uri(totp_secret, account_label)
+        return result
+
+    def rekey(self, new_master_password: str) -> None:
+        """Re-encrypt every secret under a key derived from a new password.
+
+        This is the repo's one rekey path — used by recovery (to give a new
+        password after opening with a kit) and by change-master-password. Each
+        secret is decrypted under the current key and re-encrypted under the new
+        one with its **own uuid-bound AAD unchanged** (invariant 1: the AAD
+        format never changes; only the key does). A byte-for-byte snapshot is
+        written to ``<vault>.pre-rekey`` first (sibling of invariant 17) — the
+        only recovery path if a rekey is interrupted — and the whole rewrite
+        runs in a single transaction, so a failure rolls back untouched.
+        """
+        if len(new_master_password) < 10:
+            raise VaultError("Master password must be at least 10 characters.")
+
+        # Snapshot the untouched vault before rewriting a single ciphertext.
+        snap_path = pre_rekey_backup_path(self.db_path)
+        try:
+            snap_path.write_bytes(db.snapshot_bytes(self.db_path))
+        except OSError as exc:
+            raise VaultError(
+                f"Could not write the pre-rekey backup at {snap_path}: {exc}. "
+                "The vault was left untouched."
+            ) from exc
+
+        old_key = self._key
+        new_salt = crypto.generate_salt()
+        kdf_name, kdf_params = crypto.default_kdf()
+        new_key = crypto.derive_key(new_master_password, new_salt, kdf_name, kdf_params)
+
+        with db.connect(self.db_path) as conn:
+            for cred in db.list_credentials(conn):
+                uuid = cred["uuid"]
+                old_sum = cred["password_sha256"]
+                pw_aad = _password_aad(uuid)
+                plaintext = crypto.decrypt(old_key, cred["password_enc"], pw_aad)
+                new_blob = crypto.encrypt(new_key, plaintext, pw_aad)
+                new_sum = crypto.sha256_hex(new_blob)
+
+                new_notes = None
+                if cred["notes_enc"] is not None:
+                    notes_aad = _notes_aad(uuid)
+                    notes_pt = crypto.decrypt(old_key, cred["notes_enc"], notes_aad)
+                    new_notes = crypto.encrypt(new_key, notes_pt, notes_aad)
+
+                db.rekey_credential(conn, cred["id"], new_blob, new_sum, new_notes)
+
+                # Keep the history row that mirrors the current password
+                # byte-identical to it (invariant 7 / verify_integrity layer 2);
+                # re-encrypt older versions independently.
+                for hist in db.list_history(conn, cred["id"]):
+                    if hist["ciphertext_sha256"] == old_sum:
+                        db.rekey_history(conn, hist["id"], new_blob, new_sum)
+                    else:
+                        h_pt = crypto.decrypt(old_key, hist["password_enc"], pw_aad)
+                        h_blob = crypto.encrypt(new_key, h_pt, pw_aad)
+                        db.rekey_history(conn, hist["id"], h_blob, crypto.sha256_hex(h_blob))
+
+            # Re-wrap the separate backup key, if one is configured.
+            wrapped = db.get_meta(conn, _BK_WRAPPED)
+            if wrapped:
+                backup_key = crypto.decrypt(
+                    old_key, bytes.fromhex(wrapped), _BACKUP_KEY_AAD
+                )
+                db.set_meta(
+                    conn, _BK_WRAPPED,
+                    crypto.encrypt(new_key, backup_key, _BACKUP_KEY_AAD).hex(),
+                )
+
+            db.set_meta(conn, "kdf_name", kdf_name)
+            db.set_meta(conn, "kdf_params", crypto.kdf_params_to_json(kdf_params))
+            db.set_meta(conn, "kdf_salt", new_salt.hex())
+            db.set_meta(conn, "verifier", crypto.make_verifier(new_key).hex())
+
+        self._key = new_key
 
     # ------------------------------------------------------------------
     # Credential CRUD (encrypt-before-write, decrypt-on-demand)

@@ -91,7 +91,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
 #     re-running one must be a no-op, so a crash mid-upgrade is recoverable.
 #   * Never rewrite `password_enc`, `notes_enc`, or a row's `uuid`. The AAD is
 #     bound to the uuid (`cred:{uuid}:password`), so touching it makes every
-#     secret permanently undecryptable and there is no rekey path in this repo.
+#     secret permanently undecryptable. The ONE sanctioned rewriter of those
+#     columns is a rekey (`rekey_credential`/`rekey_history`), and only ever as
+#     decrypt-then-re-encrypt under the SAME uuid-bound AAD — a migration must
+#     never touch them.
 #   * Adding a column is safe precisely because it does not touch either.
 
 def read_schema_version(conn: sqlite3.Connection) -> int:
@@ -296,6 +299,45 @@ def update_credential_meta(
         "WHERE id = ?",
         (service_name, username, notes_enc, 1 if mfa_enabled else 0,
          group_name, alt_login, now_iso, cred_id),
+    )
+
+
+def rekey_credential(
+    conn: sqlite3.Connection,
+    cred_id: int,
+    password_enc: bytes,
+    password_sha256: str,
+    notes_enc: bytes | None,
+) -> None:
+    """Rewrite a credential's ciphertext columns under a new master key.
+
+    Used only by ``Vault.rekey`` (recovery / change-master-password). Unlike a
+    migration — which must never touch these columns (see the migration rules
+    above) — a rekey deliberately re-encrypts them, but only by
+    decrypt-then-re-encrypt under the SAME uuid-bound AAD, so nothing becomes
+    undecryptable. Timestamps are left alone: a rekey is not a content change.
+    """
+    conn.execute(
+        "UPDATE credentials "
+        "SET password_enc = ?, password_sha256 = ?, notes_enc = ? "
+        "WHERE id = ?",
+        (password_enc, password_sha256, notes_enc, cred_id),
+    )
+
+
+def rekey_history(
+    conn: sqlite3.Connection,
+    history_id: int,
+    password_enc: bytes,
+    ciphertext_sha256: str,
+) -> None:
+    """Rewrite one history row's ciphertext + checksum under a new master key.
+    Companion to :func:`rekey_credential`; see it for the invariant rationale."""
+    conn.execute(
+        "UPDATE password_history "
+        "SET password_enc = ?, ciphertext_sha256 = ? "
+        "WHERE id = ?",
+        (password_enc, ciphertext_sha256, history_id),
     )
 
 

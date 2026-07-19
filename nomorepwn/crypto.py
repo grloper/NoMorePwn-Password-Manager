@@ -139,6 +139,24 @@ def decrypt(key: bytes, blob: bytes, aad: str) -> bytes:
         ) from exc
 
 
+def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int = KEY_LEN) -> bytes:
+    """Derive a subkey from *high-entropy* input keying material (HKDF-SHA256).
+
+    Used to fold recovery secrets — a full-entropy recovery key, optionally
+    combined with a TOTP seed — into an AES-256 key-encryption key, bound to a
+    vault via ``salt`` and domain-separated by ``info``.
+
+    This is **not** a password KDF and must never be handed a human password:
+    HKDF does no stretching, so it is only safe over material that already has
+    full entropy. Passwords stay on Argon2id/PBKDF2 (``derive_key``); the
+    600,000-iteration floor and the memory-hard defaults are unaffected by this.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt, info=info).derive(ikm)
+
+
 def sha256_hex(blob: bytes) -> str:
     """Checksum used by the tamper-evident history sweep."""
     return hashlib.sha256(blob).hexdigest()

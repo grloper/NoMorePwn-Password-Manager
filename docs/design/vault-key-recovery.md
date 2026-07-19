@@ -1,8 +1,19 @@
-# Design: master-key recovery (Recovery Kit) — DESIGN ONLY
+# Design: master-key recovery (Recovery Kit)
 
-> **Status: proposal for review. No code in this change implements it.**
-> Recovery would be the repo's *first rekey path* and a threat-model-level
-> change (see §6–§7), so it is written up before a line is written.
+> **Status: reviewed and IMPLEMENTED.** After review the split-key second-factor
+> variant (§8, "kit + authenticator") was chosen and both modes shipped:
+> - crypto core: `nomorepwn/recovery.py` (recovery key, escrow kit, TOTP seed,
+>   HKDF key-encryption key) + `crypto.hkdf_sha256`.
+> - rekey + recovery entry: `Vault.rekey`, `Vault.unlock_with_recovery`,
+>   `Vault.create_recovery_kit`, `vault_id` meta, `<vault>.pre-rekey` snapshot.
+> - CLI: `scripts/recovery_tool.py` (`create-kit` / `recover`). Dependency:
+>   `pyotp` (offline). Tests: `tests/test_core.py::RekeyTests`, `::RecoveryKitTests`.
+> - invariants: CLAUDE.md 1 & 16 reworded, new invariant 18 added.
+>
+> The `kit+totp` mode implements the honest caveat from §6: the authenticator
+> **seed** (stored apart from the kit) is the real second factor; the rotating
+> codes are not used on the recovery path. The design below is retained as the
+> rationale of record.
 
 ## 1. Problem & hard constraints
 

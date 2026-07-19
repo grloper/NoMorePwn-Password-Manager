@@ -60,8 +60,16 @@ def main() -> int:
     def _on_new_connection():
         conn = server.nextPendingConnection()
         if conn is not None:
-            conn.readyRead.connect(lambda: (conn.readAll(), controller.show_window()))
-            QTimer.singleShot(400, conn.deleteLater)
+            def handle_ready_read():
+                data = conn.readAll().data()
+                response = controller.handle_ipc_message(data)
+                if response:
+                    conn.write(response)
+                    conn.flush()
+                    conn.waitForBytesWritten(1000)
+                conn.disconnectFromServer()
+            conn.readyRead.connect(handle_ready_read)
+            QTimer.singleShot(4000, conn.deleteLater)
 
     server.newConnection.connect(_on_new_connection)
 

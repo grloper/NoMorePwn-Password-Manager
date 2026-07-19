@@ -197,6 +197,38 @@ class AppController(QObject):
         self.window.raise_()
         self.window.activateWindow()
 
+    def handle_ipc_message(self, data: bytes) -> bytes | None:
+        if data == b"show":
+            self.show_window()
+            return b"ok"
+        try:
+            import json
+            msg = json.loads(data.decode("utf-8"))
+            if msg.get("type") == "save-credential":
+                if self.vault is None:
+                    return json.dumps({"type": "error", "code": "vault-locked", "message": "Vault is locked."}).encode("utf-8")
+                
+                if self.window.has_unsaved():
+                    return json.dumps({"type": "error", "code": "editor-busy", "message": "Please finish or discard your current edits first."}).encode("utf-8")
+                
+                self.show_window()
+                if self.window._shell:
+                    self.window._shell.goto_page(0) # Items
+                    self.window._shell.vault_view._add()
+                    
+                    editor = self.window._shell.vault_view.editor
+                    editor.service.setText(msg.get("targetUrl", ""))
+                    editor.username.setText(msg.get("username", ""))
+                    editor.password.setText(msg.get("password", ""))
+                    editor._update_strength()
+                    editor._suggest_group_for_service()
+                    
+                return json.dumps({"type": "ok"}).encode("utf-8")
+        except Exception as e:
+            import json
+            return json.dumps({"type": "error", "code": "ipc-error", "message": str(e)}).encode("utf-8")
+        return None
+
     # ------------------------------------------------------------------
     # Close (X) handling
     # ------------------------------------------------------------------

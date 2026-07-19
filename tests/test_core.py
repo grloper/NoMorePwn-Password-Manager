@@ -1398,10 +1398,18 @@ class NativeHostTests(unittest.TestCase):
         self.assertTrue(self.host._handle({"type": "ping"})["vaultPresent"])
 
     def test_save_is_refused_not_silently_dropped(self):
-        reply = self.host._handle({"type": "save-credential", "password": "s3cret"})
-        self.assertEqual(reply["type"], "error")
-        self.assertEqual(reply["code"], "not-implemented")
-        self.assertNotIn("s3cret", json.dumps(reply))
+        from unittest.mock import patch, MagicMock
+        with patch("PySide6.QtNetwork.QLocalSocket") as mock_sock_class, \
+             patch("PySide6.QtCore.QCoreApplication") as mock_app_class:
+            mock_sock = MagicMock()
+            mock_sock.waitForConnected.return_value = False
+            mock_sock_class.return_value = mock_sock
+            mock_app_class.instance.return_value = MagicMock()
+            
+            reply = self.host._handle({"type": "save-credential", "password": "s3cret"})
+            self.assertEqual(reply["type"], "error")
+            self.assertEqual(reply["code"], "app-not-reachable")
+            self.assertNotIn("s3cret", json.dumps(reply))
 
     def test_unknown_type_is_an_error(self):
         self.assertEqual(self.host._handle({"type": "nope"})["code"], "unknown-type")

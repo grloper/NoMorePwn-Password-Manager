@@ -35,11 +35,12 @@ HOST_NAME = "com.nomorepwn.bridge"
 # this must change with it or the browser will refuse the connection.
 EXTENSION_ID = "cjgphedkabfdfbhkfleagmanmmhlolkl"
 
-# Chromium-family browsers that share the native-messaging registry layout.
+# Chromium-family browsers that share the native-messaging registry layout, plus Firefox.
 BROWSERS: dict[str, str] = {
     "Chrome": r"Software\Google\Chrome\NativeMessagingHosts",
     "Edge": r"Software\Microsoft\Edge\NativeMessagingHosts",
     "Brave": r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
+    "Firefox": r"Software\Mozilla\NativeMessagingHosts",
 }
 
 
@@ -179,6 +180,7 @@ def write_manifest() -> Path:
         "path": str(_ensure_launcher()),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"],
+        "allowed_extensions": ["extension@nomorepwn.com"],
     }
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target

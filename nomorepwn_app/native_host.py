@@ -113,15 +113,52 @@ def _handle(message: dict) -> dict:
         }
 
     if kind == "save-credential":
-        # See the module docstring: this process cannot reach the unlocked
-        # vault. Refuse clearly rather than silently dropping the credential,
-        # so the extension can keep its own state honest.
-        return {
-            "type": "error",
-            "code": "not-implemented",
-            "message": "Saving is not wired up yet: the host process cannot "
-                       "reach the running app's unlocked vault.",
-        }
+        import os
+        import getpass
+        import json
+        
+        # Redirect C-level stdout to stderr so Qt doesn't corrupt our frame stream
+        old_stdout_fd = os.dup(1)
+        os.dup2(sys.stderr.fileno(), 1)
+        old_stdout = sys.stdout
+        sys.stdout = sys.stderr
+        try:
+            from PySide6.QtCore import QCoreApplication
+            from PySide6.QtNetwork import QLocalSocket
+            
+            app = QCoreApplication.instance()
+            if not app:
+                app = QCoreApplication([])
+                
+            try:
+                user = getpass.getuser()
+            except Exception:
+                user = "default"
+            server_name = f"NoMorePwn-instance-{user}"
+            
+            sock = QLocalSocket()
+            sock.connectToServer(server_name)
+            if not sock.waitForConnected(1000):
+                return {"type": "error", "code": "app-not-reachable", "message": "NoMorePwn is not running."}
+                
+            payload = json.dumps(message).encode("utf-8")
+            sock.write(payload)
+            sock.flush()
+            if not sock.waitForBytesWritten(1000):
+                return {"type": "error", "code": "ipc-write-failed", "message": "Failed to send data."}
+                
+            if not sock.waitForReadyRead(3000):
+                return {"type": "error", "code": "ipc-timeout", "message": "App did not respond."}
+                
+            response_data = sock.readAll().data()
+            try:
+                return json.loads(response_data.decode("utf-8"))
+            except Exception:
+                return {"type": "error", "code": "ipc-invalid-response", "message": "Bad response from app."}
+        finally:
+            os.dup2(old_stdout_fd, 1)
+            os.close(old_stdout_fd)
+            sys.stdout = old_stdout
 
     return {"type": "error", "code": "unknown-type", "message": f"Unsupported: {kind!r}"}
 

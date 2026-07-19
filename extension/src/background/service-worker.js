@@ -35,17 +35,16 @@ function verify(tabId, outcome) {
     .reveal(async (credential) => {
       console.log('Login verified for URL: ' + targetUrl);
       console.debug('[nmp] outcome=%s user=%s evidence=%o', outcome, credential.username, entry.evidence);
+      fetch('http://localhost:9999/log', { method: 'POST', body: 'Login verified for URL: ' + targetUrl }).catch(() => { });
 
-      // TODO(save-prompt): show the save UI, then hand the credential over.
-      // The host currently answers `not-implemented` — it is a separate
-      // process from the running app and cannot reach the unlocked vault.
-      // See nomorepwn_app/native_host.py.
       const saved = await bridge.send({
         type: 'save-credential',
         targetUrl,
         username: credential.username,
         password: credential.password,
       });
+      fetch('http://localhost:9999/log', { method: 'POST', body: 'Saved result: ' + JSON.stringify(saved) }).catch(() => { });
+
       if (!saved.ok || saved.data?.type === 'error') {
         console.debug('[nmp] not saved: %s', saved.ok ? saved.data.code : saved.error);
       }

@@ -5,9 +5,16 @@
   "description": "Captures credentials only after a login is verified to have succeeded.",
 
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnejo0ZtZkfyxTc9uY8CCHw9STzHTpCAmT+RLSgGAMCCzXXcfmCvuMsB/P+yVZq7yuLaR8v/+77buBz3JeDIcStzUSlEFal+PydxC3VsSM5LyZaYDW2oaKqAalZnbY4Tzn+gNPMRp3RfOu0EuNr/C+B2iVjBAvc3ClbPRwQ5a/eznV6iw4LVHPXSZTa2UNCwIWWOjPC39NXhPS35PILWSewWvqHZpP6BRWul8MtjuLPo8lDMyAhm7spsx/aWvZQv3YvEN7eXIeFhXFwpaXlaSbWeE0Sp3jfX6AAnwDytQbebvOsUsJgr/d8EX1CkdEF+NTQukB1czFPKX+tuDnUsJ0QIDAQAB",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "extension@nomorepwn.com",
+      "strict_min_version": "109.0"
+    }
+  },
 
   "background": {
     "service_worker": "src/background/service-worker.js",
+    "scripts": ["src/background/service-worker.js"],
     "type": "module"
   },
 

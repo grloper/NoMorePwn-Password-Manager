@@ -980,6 +980,7 @@ class ExtensionIdTests(unittest.TestCase):
         self.assertEqual(derived, browser_bridge.EXTENSION_ID)
 
 
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
 class RecoveryUiTests(unittest.TestCase):
     """Recovery-kit Settings section + the create/recover dialogs' logic."""
 

@@ -14,6 +14,7 @@
  */
 
 import { MSG, OUTCOME } from '../shared/messages.js';
+import { api } from '../shared/browser-api.js';
 import * as store from './pending-store.js';
 import * as bridge from './bridge.js';
 import { SUCCESS_THRESHOLD, scoreResponse, scoreNavigation } from './verifier.js';
@@ -82,7 +83,7 @@ function applyScore(tabId, { rejected, points, evidence }) {
 /* Listeners                                                           */
 /* ------------------------------------------------------------------ */
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   if (typeof tabId !== 'number') return false;
 
@@ -119,7 +120,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 const extraInfoSpec = ['responseHeaders'];
 if (!navigator.userAgent.includes('Firefox')) extraInfoSpec.push('extraHeaders');
 
-chrome.webRequest.onHeadersReceived.addListener(
+api.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0 || !store.has(details.tabId)) return;
     applyScore(details.tabId, scoreResponse(store.get(details.tabId), details));
@@ -129,14 +130,14 @@ chrome.webRequest.onHeadersReceived.addListener(
 );
 
 // A committed navigation confirms the tab actually landed somewhere.
-chrome.webNavigation.onCommitted.addListener((details) => {
+api.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0 || !store.has(details.tabId)) return;
   applyScore(details.tabId, scoreNavigation(store.get(details.tabId), details));
 });
 
 // A network-level failure is not proof of bad credentials, but we are not
 // going to get our answer, so do not sit on the secret.
-chrome.webRequest.onErrorOccurred.addListener(
+api.webRequest.onErrorOccurred.addListener(
   (details) => {
     if (details.tabId < 0 || details.type !== 'main_frame') return;
     reject(details.tabId, OUTCOME.TIMED_OUT);
@@ -144,11 +145,11 @@ chrome.webRequest.onErrorOccurred.addListener(
   { urls: ['<all_urls>'] },
 );
 
-chrome.tabs.onRemoved.addListener((tabId) => reject(tabId, OUTCOME.TAB_GONE));
+api.tabs.onRemoved.addListener((tabId) => reject(tabId, OUTCOME.TAB_GONE));
 
 // Best-effort: the worker is about to be torn down. Memory dies with it either
 // way, but wiping explicitly keeps the invariant honest.
-chrome.runtime.onSuspend?.addListener(() => store.discardAll(OUTCOME.TIMED_OUT));
+api.runtime.onSuspend?.addListener(() => store.discardAll(OUTCOME.TIMED_OUT));
 
 console.debug('[nmp] verified authentication observer registered');
 

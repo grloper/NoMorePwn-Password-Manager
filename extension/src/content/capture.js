@@ -13,6 +13,9 @@
 (() => {
   'use strict';
 
+  // Cross-browser compat: Firefox content scripts expose `browser`, not `chrome`.
+  const api = globalThis.chrome ?? globalThis.browser;
+
   const MSG = {
     SUBMIT_OBSERVED: 'nmp:submit-observed',
     SPA_SUCCESS: 'nmp:spa-success',
@@ -51,22 +54,22 @@
 
     const { username } = credential;
 
-    chrome.runtime.sendMessage({ type: MSG.SUBMIT_OBSERVED, credential }, (response) => {
+    api.runtime.sendMessage({ type: MSG.SUBMIT_OBSERVED, credential }, (response) => {
       // Drop our reference the moment it is across the boundary. The string
       // itself is not wipeable from here — the background holder is where the
       // credential actually gets protected.
-      if (chrome.runtime.lastError || !response?.tracking) return;
+      if (api.runtime.lastError || !response?.tracking) return;
 
       stopObserving?.();
       stopObserving = globalThis.__nmpSpaObserver.watch({
         form,
         username,
         onSuccess: (reason) => {
-          chrome.runtime.sendMessage({ type: MSG.SPA_SUCCESS, reason });
+          api.runtime.sendMessage({ type: MSG.SPA_SUCCESS, reason });
           stopObserving = null;
         },
         onFailure: (reason) => {
-          chrome.runtime.sendMessage({ type: MSG.SPA_FAILURE, reason });
+          api.runtime.sendMessage({ type: MSG.SPA_FAILURE, reason });
           stopObserving = null;
         },
       });
@@ -87,3 +90,4 @@
     true,
   );
 })();
+

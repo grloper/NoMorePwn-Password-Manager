@@ -35,6 +35,9 @@ HOST_NAME = "com.nomorepwn.bridge"
 # this must change with it or the browser will refuse the connection.
 EXTENSION_ID = "cjgphedkabfdfbhkfleagmanmmhlolkl"
 
+# Declared in extension/manifest.json under browser_specific_settings.gecko.id.
+FIREFOX_EXTENSION_ID = "extension@nomorepwn.com"
+
 # Chromium-family browsers that share the native-messaging registry layout, plus Firefox.
 BROWSERS: dict[str, str] = {
     "Chrome": r"Software\Google\Chrome\NativeMessagingHosts",
@@ -128,11 +131,15 @@ def ensure_extension_files() -> bool:
     return (target / "manifest.json").is_file()
 
 
-def manifest_path() -> Path:
+def manifest_path(browser: str = "chrome") -> Path:
     """The host manifest lives with our data, not in the install dir.
 
     Under Program Files it would need admin rights to write.
+    Firefox rejects ``allowed_origins`` and Chrome ignores
+    ``allowed_extensions``, so we write two separate files.
     """
+    if browser == "Firefox":
+        return Path(config.DATA_DIR) / "native-messaging" / f"{HOST_NAME}.firefox.json"
     return Path(config.DATA_DIR) / "native-messaging" / f"{HOST_NAME}.json"
 
 
@@ -170,9 +177,14 @@ def _ensure_launcher() -> Path:
     return launcher
 
 
+# ---- Chromium browsers (allowed_origins) ----
+
+CHROMIUM_BROWSERS = {"Chrome", "Edge", "Brave"}
+
+
 def write_manifest() -> Path:
-    """Write the native-messaging host manifest and return its path."""
-    target = manifest_path()
+    """Write the Chromium native-messaging host manifest and return its path."""
+    target = manifest_path("chrome")
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": HOST_NAME,
@@ -180,7 +192,23 @@ def write_manifest() -> Path:
         "path": str(_ensure_launcher()),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"],
-        "allowed_extensions": ["extension@nomorepwn.com"],
+    }
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
+
+
+# ---- Firefox (allowed_extensions) ----
+
+def write_firefox_manifest() -> Path:
+    """Write the Firefox native-messaging host manifest and return its path."""
+    target = manifest_path("Firefox")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": HOST_NAME,
+        "description": "NoMorePwn vault bridge",
+        "path": str(_ensure_launcher()),
+        "type": "stdio",
+        "allowed_extensions": [FIREFOX_EXTENSION_ID],
     }
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target
@@ -201,15 +229,20 @@ def register(browsers: list[str] | None = None) -> list[str]:
     if not ensure_extension_files():
         return []
 
+    # Write both manifests once.
     write_manifest()
+    write_firefox_manifest()
+
     done = []
     for name in browsers or list(BROWSERS):
         subkey = BROWSERS.get(name)
         if not subkey:
             continue
+        # Each browser's registry points at the correct manifest variant.
+        mpath = manifest_path("Firefox") if name == "Firefox" else manifest_path("chrome")
         try:
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{subkey}\\{HOST_NAME}") as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, str(manifest_path()))
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, str(mpath))
             done.append(name)
         except OSError:
             continue
@@ -247,8 +280,8 @@ def status() -> BridgeStatus:
 
     import winreg
 
-    expected = str(manifest_path())
     for name, subkey in BROWSERS.items():
+        expected = str(manifest_path("Firefox") if name == "Firefox" else manifest_path("chrome"))
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"{subkey}\\{HOST_NAME}") as key:
                 value, _ = winreg.QueryValueEx(key, "")
@@ -256,7 +289,7 @@ def status() -> BridgeStatus:
             continue
         # A registration pointing at a manifest we no longer write is stale —
         # report it as absent so "Set up" re-points it.
-        if str(value).strip().lower() == expected.lower() and manifest_path().exists():
+        if str(value).strip().lower() == expected.lower() and Path(expected).exists():
             base.registered.append(name)
 
     if not (base.extension_dir / "manifest.json").is_file():

@@ -11,6 +11,8 @@
  * is the normal state before setup, not an exceptional one.
  */
 
+import { api } from '../shared/browser-api.js';
+
 export const HOST_NAME = 'com.nomorepwn.bridge';
 
 /** @typedef {{ok: true, data: object} | {ok: false, error: string}} BridgeResult */
@@ -30,9 +32,9 @@ export function send(message) {
     };
 
     try {
-      chrome.runtime.sendNativeMessage(HOST_NAME, message, (response) => {
-        if (chrome.runtime.lastError) {
-          finish({ ok: false, error: chrome.runtime.lastError.message });
+      api.runtime.sendNativeMessage(HOST_NAME, message, (response) => {
+        if (api.runtime.lastError) {
+          finish({ ok: false, error: api.runtime.lastError.message });
           return;
         }
         finish({ ok: true, data: response });

@@ -25,6 +25,57 @@ from . import components, theme
 _ACCEPTED = QDialog.DialogCode.Accepted
 
 
+def qr_pixmap(data: str, scale: int = 5):
+    """Render ``data`` as a scannable QR ``QPixmap``.
+
+    Returns ``None`` if the (offline, pure-Python) ``qrcode`` library is not
+    installed, so the dialog degrades to showing the seed text rather than
+    breaking. The matrix is painted by hand, so no image backend (PIL) is
+    needed.
+    """
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+
+    qr = qrcode.QRCode(border=2, box_size=1,
+                       error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(data)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    size = len(matrix) * scale
+    img = QImage(size, size, QImage.Format_RGB32)
+    img.fill(QColor("white"))
+    painter = QPainter(img)
+    black = QColor("black")
+    for y, row in enumerate(matrix):
+        for x, cell in enumerate(row):
+            if cell:
+                painter.fillRect(x * scale, y * scale, scale, scale, black)
+    painter.end()
+    return QPixmap.fromImage(img)
+
+
+def offer_recovery_setup(parent, ctx) -> None:
+    """First-run nudge: right after the vault is created, offer to make a
+    recovery kit so a forgotten password isn't fatal. A no-op if the vault
+    isn't unlocked (so it can never block on a modal without one)."""
+    from .dialogs import confirm
+
+    if ctx.get_vault() is None:
+        return
+    if confirm(
+        parent, "Set up account recovery?",
+        "Right now, if you forget your master password, this vault is gone for "
+        "good.\n\nA Recovery Kit prevents that: it escrows your key into a file "
+        "you keep yourself — nothing about it is stored in your vault. You can "
+        "also require an authenticator app as a second factor. Set one up now?",
+        confirm_text="Set up recovery kit", cancel_text="Maybe later",
+    ):
+        RecoveryKitDialog(parent, ctx.get_vault, ctx).exec()
+
+
 def _mono(label: QLabel) -> QLabel:
     p = theme.active()
     label.setWordWrap(True)
@@ -74,19 +125,33 @@ class RecoveryKitDialog(QDialog):
         rlay = QVBoxLayout(self.result_box)
         rlay.setContentsMargins(0, 4, 0, 0)
         rlay.setSpacing(8)
-        self.warn = QLabel("Write these down now — they are shown once and never stored.")
+        self.warn = QLabel("Shown once, never stored. Save everything below before you close.")
         self.warn.setWordWrap(True)
         self.warn.setStyleSheet(f"color:{p.warning}; font-weight:600;")
         rlay.addWidget(self.warn)
-        rlay.addWidget(components.field_label("Recovery code"))
+
+        self.steps_lbl = QLabel("")
+        self.steps_lbl.setWordWrap(True)
+        self.steps_lbl.setTextFormat(Qt.RichText)
+        rlay.addWidget(self.steps_lbl)
+
+        rlay.addWidget(components.field_label("① Recovery code — write it down, keep it apart from the kit file"))
         self.code_lbl = _mono(QLabel(""))
         rlay.addWidget(self.code_lbl)
-        self.seed_label = components.field_label("Authenticator seed (save this apart from the kit)")
+
+        # Authenticator block — only shown for the kit+totp mode.
+        self.seed_label = components.field_label("② Authenticator — scan this into your app")
         rlay.addWidget(self.seed_label)
+        self.qr_lbl = QLabel()
+        self.qr_lbl.setAlignment(Qt.AlignCenter)
+        rlay.addWidget(self.qr_lbl)
+        self.seed_hint = components.muted(
+            "No camera? Type this seed into your authenticator instead. Either way, "
+            "save the seed itself somewhere safe — recovery needs the seed, not the "
+            "rotating 6-digit code.")
+        rlay.addWidget(self.seed_hint)
         self.seed_lbl = _mono(QLabel(""))
         rlay.addWidget(self.seed_lbl)
-        self.uri_lbl = _mono(QLabel(""))
-        rlay.addWidget(self.uri_lbl)
         self.result_box.setVisible(False)
         lay.addWidget(self.result_box)
 
@@ -131,20 +196,33 @@ class RecoveryKitDialog(QDialog):
         self.error.setVisible(False)
         try:
             result = self.build(self.mode.currentData())
-        except vault.VaultError as exc:
+        except (vault.VaultError, recovery.RecoveryError) as exc:
             self.error.setText(str(exc))
             self.error.setVisible(True)
             return
         self.code_lbl.setText(result["recovery_code"])
         is_totp = result["mode"] == recovery.MODE_KIT_TOTP
-        self.seed_label.setVisible(is_totp)
-        self.seed_lbl.setVisible(is_totp)
-        self.uri_lbl.setVisible(is_totp)
+        for w in (self.seed_label, self.qr_lbl, self.seed_hint, self.seed_lbl):
+            w.setVisible(is_totp)
         if is_totp:
             self.seed_lbl.setText(result["totp_secret"])
-            self.uri_lbl.setText(result["totp_uri"])
+            pix = qr_pixmap(result["totp_uri"])
+            if pix is not None:
+                self.qr_lbl.setPixmap(pix)
+            else:
+                self.qr_lbl.setVisible(False)  # no qrcode lib: seed text still shown
+            self.steps_lbl.setText(
+                "To get back in later you'll need <b>all three</b>: this kit file, "
+                "the recovery code, and the authenticator seed. Store the seed and "
+                "the code separately from the kit file — that's what stops a stolen "
+                "kit from opening your vault.")
+        else:
+            self.steps_lbl.setText(
+                "To get back in later you'll need <b>both</b> the kit file and the "
+                "recovery code. Keep the code somewhere separate from the kit file.")
         self.result_box.setVisible(True)
         self.save_btn.setEnabled(True)
+        self.save_btn.setText("③ Save kit file… (do this now)")
         self.gen_btn.setEnabled(False)
         self.mode.setEnabled(False)
 

@@ -81,7 +81,8 @@ class CreateView(QWidget):
         warn_icon = QLabel()
         warn_icon.setPixmap(icons.pixmap("alert-triangle", p.warning, 16))
         warn_icon.setAlignment(Qt.AlignTop)
-        warn_text = QLabel("There is no recovery. If you forget this password, your vault is gone forever.")
+        warn_text = QLabel("If you forget this password there's no reset — but you can set up a "
+                           "Recovery Kit right after, so you're not locked out.")
         warn_text.setWordWrap(True)
         warn_text.setStyleSheet(f"color:{p.warning}; font-size:12px;")
         warn.addWidget(warn_icon)

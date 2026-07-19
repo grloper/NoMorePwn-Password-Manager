@@ -185,8 +185,14 @@ python scripts/recovery_tool.py recover my.nmpkit                        # recov
 
 - **`kit`** — recovery needs the kit file **and** the recovery code (store them apart).
 - **`kit+totp`** — recovery also needs the authenticator seed you saved at setup, so a
-  stolen kit alone can't open the vault. The rotating 6-digit codes aren't what protects
-  you — the *seed*, stored separately, is; see `docs/design/vault-key-recovery.md`.
+  stolen kit alone can't open the vault. The desktop app shows a **scannable QR** (and the
+  CLI prints one in the terminal) so you can add it to Google Authenticator/Authy, plus the
+  seed in text. The rotating 6-digit codes aren't what protects you — the *seed*, stored
+  separately, is; see `docs/design/vault-key-recovery.md`.
+
+The desktop app **offers to set this up the moment you create a vault**, with a step-by-step
+prompt — so recovery is a one-time decision at the start, not something you discover after
+you're already locked out.
 
 Recovery **rewrites the whole vault** under your new password (a `<vault>.pre-rekey`
 copy is saved first). The kit is a master-password-equivalent — protect it like one.

@@ -33,6 +33,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from nomorepwn import config, recovery, vault
 
 
+def _print_qr(data: str) -> None:
+    """Print a scannable ASCII QR of ``data`` if the qrcode lib is available."""
+    try:
+        import qrcode
+    except ImportError:
+        return
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(data)
+    qr.make(fit=True)
+    print("\n  Scan this with your authenticator app:")
+    qr.print_ascii(invert=True)
+
+
 def create_kit(db_path: str, out_path: str, mode: str, master_password: str) -> None:
     unlocked = vault.Vault.unlock(db_path, master_password)
     try:
@@ -50,10 +63,12 @@ def create_kit(db_path: str, out_path: str, mode: str, master_password: str) -> 
     print("=" * 66)
     print(f"\n  Recovery code:\n    {kit['recovery_code']}")
     if mode == recovery.MODE_KIT_TOTP:
-        print("\n  Authenticator second factor — add to your authenticator app")
-        print("  AND save the seed somewhere SEPARATE from the kit file:")
+        print("\n  Authenticator second factor — scan the QR below (or type the seed)")
+        print("  into your authenticator app, AND save the seed somewhere SEPARATE")
+        print("  from the kit file — recovery needs the seed, not the 6-digit code:")
         print(f"    seed:    {kit['totp_secret']}")
         print(f"    otpauth: {kit['totp_uri']}")
+        _print_qr(kit["totp_uri"])
         print("\n  To recover you will need: the kit file + the recovery code")
         print("  + this seed. Any two of the three are not enough.")
     else:

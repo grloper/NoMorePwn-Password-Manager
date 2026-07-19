@@ -1654,6 +1654,16 @@ class RecoveryKitTests(unittest.TestCase):
         with self.assertRaises(recovery.RecoveryError):
             vault.Vault.unlock_with_recovery(other, kit["kit_bytes"], kit["recovery_code"])
 
+    def test_malformed_verifier_fails_closed_not_crash(self):
+        # A tampered verifier meta must surface as a clean recovery failure,
+        # not an uncaught ValueError from bytes.fromhex.
+        kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
+        with db.connect(self.db_path) as conn:
+            db.set_meta(conn, "verifier", "not-hex-at-all")
+        with self.assertRaises(recovery.RecoveryError):
+            vault.Vault.unlock_with_recovery(
+                self.db_path, kit["kit_bytes"], kit["recovery_code"])
+
     def test_tampered_kit_header_fails_to_open(self):
         kit = self.vault.create_recovery_kit(mode=recovery.MODE_KIT)
         blob = bytearray(kit["kit_bytes"])

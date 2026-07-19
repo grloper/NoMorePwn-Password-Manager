@@ -48,6 +48,7 @@ class AppController(QObject):
         self.vault: vault.Vault | None = None
         self._quitting = False
         self._tray_hint_shown = False
+        self._pending_captures: list[dict] = []
 
         # Theme (palette first — it covers widgets the stylesheet can't reach)
         theme.set_active(theme.get_palette(self.settings.theme))
@@ -134,6 +135,14 @@ class AppController(QObject):
         self._reset_autolock()
         self._run_integrity_sweep(vlt)
         self.backups.ensure_initial()
+        
+        # Flush pending captures
+        if self._pending_captures:
+            for msg in self._pending_captures:
+                # Re-invoke the IPC handler for each pending message
+                import json
+                self.handle_ipc_message(json.dumps(msg).encode("utf-8"))
+            self._pending_captures.clear()
 
     def _on_vault_created(self, vlt: "vault.Vault") -> None:
         """A vault was just created (first run). Offer to set up recovery so a
@@ -205,23 +214,68 @@ class AppController(QObject):
             import json
             msg = json.loads(data.decode("utf-8"))
             if msg.get("type") == "save-credential":
-                if self.vault is None:
-                    return json.dumps({"type": "error", "code": "vault-locked", "message": "Vault is locked."}).encode("utf-8")
+                from nomorepwn.settings import CAPTURE_SILENT, CAPTURE_PROMPT, CAPTURE_DISABLED
                 
-                if self.window.has_unsaved():
-                    return json.dumps({"type": "error", "code": "editor-busy", "message": "Please finish or discard your current edits first."}).encode("utf-8")
-                
-                self.show_window()
-                if self.window._shell:
-                    self.window._shell.goto_page(0) # Items
-                    self.window._shell.vault_view._add()
+                if self.settings.capture_action == CAPTURE_DISABLED:
+                    return json.dumps({"type": "ok"}).encode("utf-8")
                     
-                    editor = self.window._shell.vault_view.editor
-                    editor.service.setText(msg.get("targetUrl", ""))
-                    editor.username.setText(msg.get("username", ""))
-                    editor.password.setText(msg.get("password", ""))
-                    editor._update_strength()
-                    editor._suggest_group_for_service()
+                if self.vault is None:
+                    # Queue the capture and ask user to unlock
+                    self._pending_captures.append(msg)
+                    self.window.show_unlock()
+                    self._present_window()
+                    return json.dumps({"type": "ok"}).encode("utf-8")
+                
+                target_url = msg.get("targetUrl", "")
+                username = msg.get("username", "")
+                password = msg.get("password", "")
+                
+                if self.settings.capture_action == CAPTURE_PROMPT:
+                    if self.window.has_unsaved():
+                        return json.dumps({"type": "error", "code": "editor-busy", "message": "Please finish or discard your current edits first."}).encode("utf-8")
+                    
+                    self.show_window()
+                    if self.window._shell:
+                        self.window._shell.goto_page(0) # Items
+                        self.window._shell.vault_view._add()
+                        
+                        editor = self.window._shell.vault_view.editor
+                        editor.service.setText(target_url)
+                        editor.username.setText(username)
+                        editor.password.setText(password)
+                        editor.group.setText("Captured Logins")
+                        editor._update_strength()
+                        editor._suggest_group_for_service()
+                        
+                    return json.dumps({"type": "ok"}).encode("utf-8")
+                
+                # CAPTURE_SILENT behavior
+                from urllib.parse import urlparse
+                try:
+                    parsed = urlparse(target_url)
+                    service_name = parsed.netloc or target_url
+                except Exception:
+                    service_name = target_url
+
+                self.vault.add_credential(
+                    service_name=service_name,
+                    username=username,
+                    password=password,
+                    group_name="Captured Logins",
+                    notes=f"Captured from {target_url}"
+                )
+                self.vault.save()
+                
+                from PySide6.QtWidgets import QSystemTrayIcon
+                self.tray.tray.showMessage(
+                    "Credential Captured", 
+                    f"Saved {username} for {service_name} to Captured Logins.", 
+                    QSystemTrayIcon.Information, 
+                    5000
+                )
+                
+                if self.window._shell and hasattr(self.window._shell, "vault_view"):
+                    self.window._shell.vault_view.refresh()
                     
                 return json.dumps({"type": "ok"}).encode("utf-8")
         except Exception as e:

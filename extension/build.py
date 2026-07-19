@@ -29,7 +29,7 @@ SRC = ROOT  # the extension source is the extension/ directory itself
 DIST = ROOT / "dist"
 
 # Files and directories that should NOT be copied into dist.
-EXCLUDE = {"dist", "build.py", "node_modules", "package.json", "package-lock.json", "tests", ".git"}
+EXCLUDE = {"dist", "build.py", "node_modules", "package.json", "package-lock.json", "tests", ".git", ".keys"}
 
 
 def _copy_source(target: Path) -> None:

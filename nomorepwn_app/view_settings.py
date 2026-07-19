@@ -224,6 +224,16 @@ class SettingsView(QWidget):
         self.ext_status = QLabel("")
         self.ext_status.setWordWrap(True)
         ext_card.add(self.ext_status)
+        
+        from nomorepwn.settings import CAPTURE_SILENT, CAPTURE_PROMPT, CAPTURE_DISABLED
+        self.capture_action = QComboBox()
+        self.capture_action.addItem("Save silently to Captured Logins", CAPTURE_SILENT)
+        self.capture_action.addItem("Prompt me to review in the app", CAPTURE_PROMPT)
+        self.capture_action.addItem("Ignore completely", CAPTURE_DISABLED)
+        ext_card.add(_Setting(
+            "When a login is captured",
+            "How NoMorePwn handles credentials sent from your browser.",
+            self.capture_action))
 
         self.ext_setup_btn = components.button("Set up browser extension…", "globe")
         self.ext_setup_btn.clicked.connect(self._setup_extension)
@@ -289,6 +299,7 @@ class SettingsView(QWidget):
         self.backup_enabled.toggled.connect(self._save)
         self.backup_keep.currentIndexChanged.connect(self._save)
         self.updates_enabled.toggled.connect(self._save)
+        self.capture_action.currentIndexChanged.connect(self._save)
 
     def _load(self) -> None:
         self._loading = True
@@ -304,6 +315,7 @@ class SettingsView(QWidget):
         self.backup_enabled.setChecked(s.backup_enabled)
         self.backup_keep.setCurrentIndex(max(0, self.backup_keep.findData(s.backup_keep)))
         self.updates_enabled.setChecked(s.updates_enabled)
+        self.capture_action.setCurrentIndex(max(0, self.capture_action.findData(s.capture_action)))
         self._loading = False
         self._refresh_backup_info()
         self._refresh_extension_info()
@@ -538,5 +550,6 @@ class SettingsView(QWidget):
         s.backup_enabled = self.backup_enabled.isChecked()
         s.backup_keep = self.backup_keep.currentData()
         s.updates_enabled = self.updates_enabled.isChecked()
+        s.capture_action = self.capture_action.currentData()
         s.save()
         self._on_change()

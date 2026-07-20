@@ -1288,5 +1288,129 @@ class RecoveryUiTests(unittest.TestCase):
             dlg.recover(kit["kit_bytes"], wrong, "", "long enough pw", "long enough pw")
 
 
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class CaptureConfirmDialogTests(unittest.TestCase):
+    """The modeless 'was this a login?' prompt's contract."""
+
+    def setUp(self):
+        from nomorepwn_app import theme
+        theme.set_active(theme.get_palette("dark"))
+
+    def test_decide_emits_the_choice_and_closes(self):
+        from PySide6.QtWidgets import QDialog
+        from nomorepwn_app.dialogs import CaptureConfirmDialog
+        from nomorepwn import capture
+
+        for choice in (capture.SAVE, capture.IGNORE):
+            dlg = CaptureConfirmDialog(None, "https://accounts.google.com", "alice")
+            seen: list[str] = []
+            dlg.decided.connect(seen.append)
+            dlg._decide(choice)
+            self.assertEqual(seen, [choice])
+            # QDialog.DialogCode.Accepted — never off the instance (PySide6 6.11).
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 not installed")
+class CaptureFlowTests(unittest.TestCase):
+    """End-to-end capture: verified saves, unverified asks, learning sticks.
+
+    Drives the real AppController IPC handler against a real unlocked vault so
+    the whole path — planner, policy, save, and the modeless confirm dialog —
+    is exercised, not just the pure pieces.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nomorepwn_app import theme
+        from nomorepwn_app.controller import AppController
+
+        theme.set_active(theme.get_palette("dark"))
+        self._real_db = config_module.DB_PATH
+        self._real_data = config_module.DATA_DIR
+        tmp = Path(tempfile.mkdtemp())
+        config_module.DATA_DIR = tmp
+        config_module.DB_PATH = tmp / "vault.db"
+        vault.create_vault(config_module.DB_PATH, MASTER)
+
+        self.ctrl = AppController(_app)
+        self.vault = vault.Vault.unlock(config_module.DB_PATH, MASTER)
+        self.ctrl._on_vault_opened(self.vault)
+        self.ctrl.settings.capture_action = "silent"
+
+    def tearDown(self):
+        try:
+            self.vault.lock()
+        except Exception:
+            pass
+        config_module.DB_PATH = self._real_db
+        config_module.DATA_DIR = self._real_data
+
+    def _ipc(self, **msg) -> dict:
+        import json
+        msg["type"] = "save-credential"
+        return json.loads(self.ctrl.handle_ipc_message(json.dumps(msg).encode()).decode())
+
+    def _count(self) -> int:
+        return len(self.vault.list_credentials())
+
+    def test_verified_capture_saves_and_learns_the_origin(self):
+        from nomorepwn import capture
+
+        reply = self._ipc(verified=True, targetUrl="https://verified.example/login",
+                          username="u1", password="p1")
+        self.assertEqual(reply["type"], "ok")
+        self.assertEqual(self._count(), 1)
+        self.assertEqual(self.ctrl.capture_policy.decision("https://verified.example"),
+                         capture.SAVE)
+
+    def test_unverified_unknown_origin_asks_before_saving(self):
+        from nomorepwn import capture
+
+        reply = self._ipc(unverified=True, targetUrl="https://ask.example/login",
+                          username="u2", password="p2")
+        self.assertEqual(reply["type"], "ok")
+        # Nothing saved yet — a modeless confirm dialog is up.
+        self.assertEqual(self._count(), 0)
+        self.assertEqual(len(self.ctrl._capture_dialogs), 1)
+
+        dlg = next(iter(self.ctrl._capture_dialogs))
+        dlg._decide(capture.SAVE)
+        _app.processEvents()
+        self.assertEqual(self._count(), 1)
+        self.assertEqual(self.ctrl.capture_policy.decision("https://ask.example"),
+                         capture.SAVE)
+
+    def test_declining_the_prompt_learns_ignore_and_suppresses_future_captures(self):
+        from nomorepwn import capture
+
+        self._ipc(unverified=True, targetUrl="https://spam.example/login",
+                  username="u3", password="p3")
+        dlg = next(iter(self.ctrl._capture_dialogs))
+        dlg._decide(capture.IGNORE)
+        _app.processEvents()
+        self.assertEqual(self.ctrl.capture_policy.decision("https://spam.example"),
+                         capture.IGNORE)
+        self.assertEqual(self._count(), 0)
+
+        # A later capture on that origin is dropped, and the reply tells the
+        # extension to stop tracking it.
+        reply = self._ipc(unverified=True, targetUrl="https://spam.example/x",
+                          username="u4", password="p4")
+        self.assertEqual(reply.get("policy"), capture.IGNORE)
+        self.assertEqual(self._count(), 0)
+        self.assertEqual(len(self.ctrl._capture_dialogs), 0)
+
+    def test_a_blessed_origin_saves_even_when_unverified(self):
+        from nomorepwn import capture
+
+        self.ctrl.capture_policy.remember("https://blessed.example", capture.SAVE)
+        reply = self._ipc(unverified=True, targetUrl="https://blessed.example/login",
+                          username="u5", password="p5")
+        self.assertEqual(reply["type"], "ok")
+        self.assertEqual(self._count(), 1)
+        self.assertEqual(len(self.ctrl._capture_dialogs), 0, "a known origin must not re-prompt")
+
+
 if __name__ == "__main__":
     unittest.main()

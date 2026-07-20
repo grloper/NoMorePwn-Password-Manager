@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from nomorepwn.capture import IGNORE as CAPTURE_IGNORE, SAVE as CAPTURE_SAVE
 from nomorepwn.settings import CLOSE_QUIT, CLOSE_TRAY
 
 from . import components, icons, theme
@@ -269,6 +270,73 @@ class _OptionCard(QFrame):
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+
+class CaptureConfirmDialog(QDialog):
+    """Ask whether an unverified browser submission was a real login.
+
+    Shown **modeless** — it is triggered by a background capture, not by the
+    user, so it must not block the event loop or the native-host reply. Emits
+    ``decided`` with :data:`nomorepwn.capture.SAVE` or ``IGNORE``; dismissing it
+    (Esc / window close) decides nothing, so the site may be asked about again.
+
+    Carries no plaintext itself: the controller holds the credential and this
+    dialog only reports the user's choice.
+    """
+
+    decided = Signal(str)
+
+    def __init__(self, parent, origin: str, username: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Save this login?")
+        self.setModal(False)
+        self.setMinimumWidth(460)
+        self.origin = origin
+        p = theme.active()
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 24, 26, 22)
+        lay.setSpacing(14)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        ico = QLabel()
+        ico.setPixmap(icons.pixmap("key", p.primary, 26))
+        ico.setAlignment(Qt.AlignTop)
+        head.addWidget(ico)
+        tcol = QVBoxLayout()
+        tcol.setSpacing(6)
+        tcol.addWidget(components.heading("Save this login?", "H3"))
+        who = f" as <b>{username}</b>" if username else ""
+        msg = QLabel(
+            f"NoMorePwn noticed you may have signed in to <b>{origin}</b>{who}, "
+            "but couldn't confirm it automatically. Save this login to your vault?")
+        msg.setObjectName("Muted")
+        msg.setWordWrap(True)
+        msg.setTextFormat(Qt.RichText)
+        tcol.addWidget(msg)
+        hint = QLabel(
+            "Your answer is remembered for this site — “Save” makes it automatic "
+            "next time, “Not a login” stops the prompt here.")
+        hint.setObjectName("Faint")
+        hint.setWordWrap(True)
+        tcol.addWidget(hint)
+        head.addLayout(tcol, 1)
+        lay.addLayout(head)
+
+        btns = QHBoxLayout()
+        not_login = components.button("Not a login", object_name="Ghost")
+        not_login.clicked.connect(lambda: self._decide(CAPTURE_IGNORE))
+        btns.addWidget(not_login)
+        btns.addStretch(1)
+        save = components.primary_button("Save login", "check")
+        save.clicked.connect(lambda: self._decide(CAPTURE_SAVE))
+        btns.addWidget(save)
+        lay.addLayout(btns)
+
+    def _decide(self, decision: str) -> None:
+        self.decided.emit(decision)
+        self.accept()
 
 
 class CloseChoiceDialog(QDialog):

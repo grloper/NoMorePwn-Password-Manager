@@ -1153,6 +1153,67 @@ class BundledExtensionTests(unittest.TestCase):
                 self.assertIn(path.suffix, self._ALLOWED, f"unexpected file: {path.name}")
 
 
+class CapturePolicyTests(unittest.TestCase):
+    """Per-origin capture learning and the pure planner behind it."""
+
+    def setUp(self):
+        from nomorepwn import capture
+        self.capture = capture
+        self.tmp = Path(tempfile.mkdtemp())
+        self.path = self.tmp / "capture_policy.json"
+
+    def test_origin_collapses_a_flow_to_scheme_and_host(self):
+        o = self.capture.origin_of
+        self.assertEqual(o("https://accounts.google.com/signin/v2/identifier"),
+                         "https://accounts.google.com")
+        self.assertEqual(o("http://localhost:800/login"), "http://localhost:800")
+        # A whole multi-step flow shares one key, so one "yes" covers it.
+        self.assertEqual(o("https://accounts.google.com/signin"),
+                         o("https://accounts.google.com/challenge/pwd"))
+
+    def test_policy_persists_and_reloads(self):
+        p = self.capture.CapturePolicy(self.path)
+        self.assertIsNone(p.decision("https://x.example"))
+        p.remember("https://x.example", self.capture.SAVE)
+        p.remember("https://y.example", self.capture.IGNORE)
+        # A fresh instance reads what the last one wrote.
+        again = self.capture.CapturePolicy(self.path)
+        self.assertEqual(again.decision("https://x.example"), self.capture.SAVE)
+        self.assertEqual(again.decision("https://y.example"), self.capture.IGNORE)
+        again.forget("https://x.example")
+        self.assertIsNone(self.capture.CapturePolicy(self.path).decision("https://x.example"))
+
+    def test_policy_rejects_junk_decisions_and_corrupt_files(self):
+        p = self.capture.CapturePolicy(self.path)
+        p.remember("https://x.example", "nonsense")  # not save/ignore -> ignored
+        self.assertIsNone(p.decision("https://x.example"))
+        self.path.write_text("}{ not json", encoding="utf-8")
+        self.assertEqual(self.capture.CapturePolicy(self.path).known(), {})
+
+    def test_planner_covers_the_decision_matrix(self):
+        from nomorepwn.settings import CAPTURE_SILENT, CAPTURE_PROMPT, CAPTURE_DISABLED
+        plan = self.capture.plan_capture
+        C = self.capture
+
+        # Disabled always wins, even for a verified login on a blessed origin.
+        self.assertEqual(plan(decision=C.SAVE, capture_action=CAPTURE_DISABLED, verified=True),
+                         C.PLAN_IGNORE)
+        # A learned "ignore" suppresses everything short of disabled.
+        self.assertEqual(plan(decision=C.IGNORE, capture_action=CAPTURE_SILENT, verified=True),
+                         C.PLAN_IGNORE)
+        # Verified logins save (or open the editor in prompt mode).
+        self.assertEqual(plan(decision=None, capture_action=CAPTURE_SILENT, verified=True),
+                         C.PLAN_SAVE)
+        self.assertEqual(plan(decision=None, capture_action=CAPTURE_PROMPT, verified=True),
+                         C.PLAN_EDITOR)
+        # A blessed origin saves even when unverified.
+        self.assertEqual(plan(decision=C.SAVE, capture_action=CAPTURE_SILENT, verified=False),
+                         C.PLAN_SAVE)
+        # Unverified + never-seen origin is the only thing that asks.
+        self.assertEqual(plan(decision=None, capture_action=CAPTURE_SILENT, verified=False),
+                         C.PLAN_CONFIRM)
+
+
 class VersionComparisonTests(unittest.TestCase):
     """Numeric, not lexicographic — a string compare strands users on .9."""
 

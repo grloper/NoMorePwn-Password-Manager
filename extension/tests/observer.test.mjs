@@ -314,15 +314,42 @@ section('3. Background service worker integration');
   await submit(6);
   check('resubmission supersedes and wipes the stale credential', store.size() >= 1 && wipes >= 1, `wipes=${wipes}`);
 
-  // --- timeout ---
+  // --- timeout now falls back to an *unverified* capture, not a silent drop ---
   wipes = 0;
+  native.sent.length = 0;
+  native.reply = { type: 'ok' };
   await submit(7);
   check('pending before deadline', store.has(7));
   await new Promise((r) => setTimeout(r, store.VERIFICATION_WINDOW_MS + 250));
   check('timeout wipes the credential', !store.has(7), `size=${store.size()}`);
   check('wipe() fired on the TIMEOUT path', wipes >= 1, `wipes=${wipes}`);
+  const unverified = native.sent.find((s) => s.message?.type === 'save-credential');
+  check('timeout sends an unverified capture rather than dropping it', !!unverified, JSON.stringify(native.sent));
+  check('unverified capture is flagged for the app', unverified?.message?.unverified === true);
+  check('unverified capture still carries the credential', unverified?.message?.password === 'pw');
 
-  // --- the verified path reaches the native host ---
+  // --- an origin the app reports as "ignore" is not tracked again ---
+  // (submit() hardcodes targetUrl, so key a distinct origin explicitly.)
+  const submitTo = (tabId, targetUrl) =>
+    new Promise((resolve) => {
+      fire(
+        'onMessage',
+        { type: 'nmp:submit-observed', credential: { username: 'ofek', password: 'pw', targetUrl, timestamp: Date.now() } },
+        { tab: { id: tabId }, url: `${targetUrl}/login` },
+        resolve,
+      );
+    });
+  wipes = 0;
+  native.reply = { type: 'ok', policy: 'ignore' };
+  await submitTo(9, 'https://ignore.example.com');
+  await new Promise((r) => setTimeout(r, store.VERIFICATION_WINDOW_MS + 250));
+  await settle();
+  native.sent.length = 0;
+  const tracked = await submitTo(9, 'https://ignore.example.com');
+  check('a learned "ignore" origin is refused up front', tracked?.tracking === false, JSON.stringify(tracked));
+  check('and never reaches the host again', !native.sent.some((s) => s.message?.type === 'save-credential'));
+
+  // --- the verified path reaches the native host, flagged verified ---
   native.sent.length = 0;
   native.reply = { type: 'error', code: 'not-implemented' };
   await submit(8);
@@ -331,6 +358,7 @@ section('3. Background service worker integration');
   const saveAttempt = native.sent.find((s) => s.message?.type === 'save-credential');
   check('verified login calls the native host', !!saveAttempt, JSON.stringify(native.sent));
   check('native host is addressed by name', saveAttempt?.host === 'com.nomorepwn.bridge', saveAttempt?.host);
+  check('verified capture is flagged verified', saveAttempt?.message?.verified === true);
   check('credential reaches the host intact', saveAttempt?.message?.password === 'pw' && saveAttempt?.message?.username === 'ofek');
   check('holder still wiped after a host refusal', !store.has(8));
 

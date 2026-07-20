@@ -36,21 +36,59 @@ function verify(tabId, outcome) {
     .reveal(async (credential) => {
       console.log('Login verified for URL: ' + targetUrl);
       console.debug('[nmp] outcome=%s user=%s evidence=%o', outcome, credential.username, entry.evidence);
-      fetch('http://localhost:9999/log', { method: 'POST', body: 'Login verified for URL: ' + targetUrl }).catch(() => { });
 
       const saved = await bridge.send({
         type: 'save-credential',
+        verified: true,
         targetUrl,
         username: credential.username,
         password: credential.password,
       });
-      fetch('http://localhost:9999/log', { method: 'POST', body: 'Saved result: ' + JSON.stringify(saved) }).catch(() => { });
 
       if (!saved.ok || saved.data?.type === 'error') {
         console.debug('[nmp] not saved: %s', saved.ok ? saved.data.code : saved.error);
       }
     })
     .catch((err) => console.warn('[nmp] reveal failed', err))
+    .finally(() => entry.holder.wipe());
+}
+
+/** Origins the user has told us are "not a login" — skip them this session. */
+const ignoredOrigins = new Set();
+
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Verification never resolved — no redirect, no SPA verdict, no 401, just the
+ * deadline. Instead of dropping the credential silently (which is how Google
+ * and other multi-step / SPA logins were lost), hand it to the app as an
+ * *unverified* capture: for an origin the user has blessed it saves, for one
+ * they rejected it is dropped, and for a new one the app asks them once. Their
+ * answer is remembered per origin, so we converge on the right behaviour.
+ */
+function promptUnverified(tabId) {
+  const entry = store.detach(tabId, OUTCOME.TIMED_OUT);
+  if (!entry) return;
+  const { targetUrl } = entry;
+
+  entry.holder
+    .reveal(async (credential) => {
+      const res = await bridge.send({
+        type: 'save-credential',
+        unverified: true,
+        targetUrl,
+        username: credential.username,
+        password: credential.password,
+      });
+      if (res.ok && res.data?.policy === 'ignore') ignoredOrigins.add(originOf(targetUrl));
+    })
+    .catch((err) => console.warn('[nmp] unverified capture failed', err))
     .finally(() => entry.holder.wipe());
 }
 
@@ -88,10 +126,15 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (typeof tabId !== 'number') return false;
 
   switch (message?.type) {
-    case MSG.SUBMIT_OBSERVED:
+    case MSG.SUBMIT_OBSERVED: {
+      // A site the user already told us is "not a login" — don't even track it.
+      if (ignoredOrigins.has(originOf(message.credential?.targetUrl ?? sender.url))) {
+        sendResponse({ tracking: false });
+        return false;
+      }
       store
-        .open(tabId, message.credential, sender.url ?? message.credential.targetUrl, (_entry, outcome) =>
-          reject(tabId, outcome),
+        .open(tabId, message.credential, sender.url ?? message.credential.targetUrl, () =>
+          promptUnverified(tabId),
         )
         .then(() => sendResponse({ tracking: true }))
         .catch((err) => {
@@ -99,6 +142,7 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ tracking: false });
         });
       return true; // keep the message channel open for the async response
+    }
 
     case MSG.SPA_SUCCESS:
       // The DOM verdict is independent evidence, so it resolves on its own

@@ -273,7 +273,12 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   `#ciphertext`.** Private fields are installed *only* by a real constructor call. This has already
   happened once here.
 - SPAs do not get the 10s `WINDOW_MS` advertises — `VERIFICATION_WINDOW_MS = 5000` in the background
-  store hard-caps it, and late verdicts are dropped with no log.
+  store hard-caps it. A verdict that never arrives (the deadline) no longer drops the credential:
+  `service-worker.js` `promptUnverified` hands it to the app as `{unverified:true}`, and the app's
+  learned per-origin policy (`nomorepwn/capture.py`, persisted to `capture_policy.json`) decides
+  save / ignore / ask-once. A 401/403 or SPA-error verdict is still a silent wipe (conclusive
+  failure, no prompt). The save/ask/ignore decision is the pure `capture.plan_capture`, tested in
+  `CapturePolicyTests`; the extension side is tested in `observer.test.mjs` §3.
 - `verifier.js` `LOGIN_ROUTE` is an unanchored substring regex (`/author/ofek` matches "auth").
   `scoreResponse` never compares origins: third-party traffic in the tab contributes points, and a
   401 from any subframe rejects the capture outright.

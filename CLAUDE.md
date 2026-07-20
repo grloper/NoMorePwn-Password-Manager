@@ -281,12 +281,19 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   scripts and cannot import) and has **zero** test coverage. Renaming a type in
   `shared/messages.js` leaves all 52 checks green and the capture path dead.
 - The `content_scripts` `js` array is load-ordered: `spa-observer.js` must stay first.
-- The extension is bundled **into** the .exe and materialised to
-  `%APPDATA%\NoMorePwn\extension` at startup, version-stamped in `.version`. It is not beside the
-  .exe (onefile has no such folder) and not `_MEIPASS` (a temp dir that changes every launch, which
-  would break the loaded extension on restart). `build/NoMorePwn.spec` **allowlists** what ships —
-  `manifest.json` plus `.js/.json/.css/.html` under `src/` — so `extension/.keys/` is unreachable
-  by construction rather than by an exclude list someone has to maintain.
+- The extension ships as **two per-browser builds** — Chrome and Firefox need different manifests
+  (`service_worker` + `key` vs `scripts` + `browser_specific_settings`), so no single folder loads
+  in both. `extension/build.py` writes them to `extension/dist/chrome` and `extension/dist/firefox`
+  (both committed and kept in sync); a source checkout loads those directly. A frozen build bundles
+  them **into** the .exe and materialises them to `%APPDATA%\NoMorePwn\extension\{chrome,firefox}`
+  at startup, version-stamped in `.version`. Not beside the .exe (onefile has no such folder) and
+  not `_MEIPASS` (a temp dir that changes every launch, which would break the loaded extension on
+  restart). `browser_bridge.extension_dir(browser)` is the one place that maps a browser to its
+  folder — Chromium (`Chrome`/`Edge`/`Brave`) → `chrome`, Firefox → `firefox`; anything else falls
+  back to `chrome`. `build/NoMorePwn.spec` **allowlists** what ships — `.js/.json/.css/.html` under
+  `extension/dist/<variant>` — and `extension/.keys/` lives outside `dist/` entirely (build.py
+  excludes it), so it is unreachable by construction rather than by an exclude list someone
+  maintains.
 
 ## How to verify a change here
 

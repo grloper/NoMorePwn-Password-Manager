@@ -137,11 +137,26 @@ MV3 extensions. If review friction becomes a problem, dropping the
 
 ## Running it
 
-1. In NoMorePwn: **Settings → Browser extension → Set up browser extension…**
-   This writes the native-messaging host manifest and registers it under HKCU
-   for Chrome, Edge, and Brave. No admin rights needed.
-2. In the browser: `chrome://extensions` → Developer mode → **Load unpacked** →
-   select this `extension/` directory.
+Chrome and Firefox need different manifests, so the extension is built into two
+per-browser folders. Build them (both are also committed under `dist/`):
+
+```bash
+python extension/build.py          # -> extension/dist/chrome and extension/dist/firefox
+```
+
+1. In NoMorePwn: **Settings → Browser extension → Auto-install on browser**.
+   Pick a browser; NoMorePwn writes the native-messaging host manifest, registers
+   it under HKCU (Chrome, Edge, Brave, or Firefox — no admin rights), opens that
+   browser's extensions page, and opens the folder to load.
+2. Finish in the browser — this one click is yours, since browsers don't let an
+   app install an unpacked extension silently:
+   - **Chrome / Edge / Brave:** `chrome://extensions` → Developer mode →
+     **Load unpacked** → select `extension/dist/chrome`.
+   - **Firefox:** `about:debugging#/runtime/this-firefox` → **Load Temporary
+     Add-on…** → pick any file in `extension/dist/firefox`.
+
+Never load the top-level `extension/` source folder — its combined manifest is
+not what either browser expects; load the per-browser `dist/` build instead.
 
 Watch the worker's console via *Inspect views: service worker*; it logs whether
 the desktop app is reachable at startup.

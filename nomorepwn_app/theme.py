@@ -311,6 +311,30 @@ QListWidget::item {{
 QListWidget::item:hover {{ background: {p.surface_alt}; }}
 QListWidget::item:selected {{ background: {p.selection}; }}
 
+/* ---- Settings category nav ---- */
+QListWidget#SettingsNav {{
+    background: {p.window};
+    border: none;
+    border-right: 1px solid {p.border};
+    padding: 12px 8px;
+    outline: none;
+}}
+QListWidget#SettingsNav::item {{
+    border-radius: 10px;
+    margin: 2px 4px;
+    padding: 10px 12px;
+    color: {p.text_muted};
+    font-weight: 600;
+}}
+QListWidget#SettingsNav::item:hover {{
+    background: {p.surface_alt};
+    color: {p.text};
+}}
+QListWidget#SettingsNav::item:selected {{
+    background: {p.primary_soft};
+    color: {p.primary};
+}}
+
 /* ---- Checkboxes / toggles ---- */
 QCheckBox {{ spacing: 8px; color: {p.text}; }}
 QCheckBox::indicator {{

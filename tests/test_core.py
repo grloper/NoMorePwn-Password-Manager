@@ -1048,20 +1048,25 @@ class BundledExtensionTests(unittest.TestCase):
     user at a directory that had never been created.
     """
 
-    def setUp(self):
-        import shutil as _shutil
+    _ALLOWED = {".js", ".json", ".css", ".html"}
 
+    def setUp(self):
         from nomorepwn_app import browser_bridge
 
         self.bridge = browser_bridge
         repo = Path(__file__).resolve().parent.parent
 
-        # Reproduce the layout build/NoMorePwn.spec bundles into _MEIPASS.
+        # Reproduce exactly what build/NoMorePwn.spec bundles into _MEIPASS:
+        # the per-browser builds under extension/dist/<variant>, allowlisted to
+        # the runtime file types only.
         self.meipass = Path(tempfile.mkdtemp())
-        bundled = self.meipass / "extension"
-        bundled.mkdir()
-        _shutil.copy(repo / "extension" / "manifest.json", bundled / "manifest.json")
-        _shutil.copytree(repo / "extension" / "src", bundled / "src")
+        dist = repo / "extension" / "dist"
+        for variant in ("chrome", "firefox"):
+            for path in (dist / variant).rglob("*"):
+                if path.is_file() and path.suffix in self._ALLOWED:
+                    dest = self.meipass / "extension" / path.relative_to(dist)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(path.read_bytes())
 
         self.data = Path(tempfile.mkdtemp())
         self._real_data_dir = config_module.DATA_DIR
@@ -1080,12 +1085,19 @@ class BundledExtensionTests(unittest.TestCase):
 
     def test_materialises_to_the_data_dir_not_beside_the_exe(self):
         """Onefile builds have no writable folder beside the .exe, and
-        _MEIPASS changes every launch — Chrome needs a stable path."""
-        self.assertEqual(self.bridge.extension_dir(), self.data / "extension")
+        _MEIPASS changes every launch — a browser needs a stable path.
+
+        Per-browser: Chrome/Edge/Brave get the chrome build, Firefox its own.
+        """
+        self.assertEqual(self.bridge.extension_dir(), self.data / "extension" / "chrome")
+        self.assertEqual(self.bridge.extension_dir("Firefox"),
+                         self.data / "extension" / "firefox")
         self.assertTrue(self.bridge.ensure_extension_files())
-        self.assertTrue((self.data / "extension" / "manifest.json").is_file())
-        self.assertTrue(
-            (self.data / "extension" / "src" / "background" / "service-worker.js").is_file())
+        for variant in ("chrome", "firefox"):
+            self.assertTrue((self.data / "extension" / variant / "manifest.json").is_file())
+            self.assertTrue(
+                (self.data / "extension" / variant / "src" / "background"
+                 / "service-worker.js").is_file())
 
     def test_is_idempotent_for_the_same_version(self):
         self.assertTrue(self.bridge.ensure_extension_files())
@@ -1096,7 +1108,7 @@ class BundledExtensionTests(unittest.TestCase):
 
     def test_refreshes_when_the_version_changes(self):
         self.assertTrue(self.bridge.ensure_extension_files())
-        stale = self.data / "extension" / "stale.js"
+        stale = self.data / "extension" / "chrome" / "stale.js"
         stale.write_text("removed upstream", encoding="utf-8")
         (self.data / "extension" / ".version").write_text("0.0.1", encoding="utf-8")
 
@@ -1117,17 +1129,17 @@ class BundledExtensionTests(unittest.TestCase):
         """extension/.keys/ signs the pinned extension ID; shipping it would
         let anyone build an extension the user's host already authorizes.
 
-        The structural guarantee is that collection walks only `extension/src`
-        and picks up `manifest.json` explicitly — so anything at
-        `extension/.keys` is unreachable by construction, not by an exclude
-        list somebody has to remember to update.
+        The structural guarantee is that collection walks only
+        `extension/dist/<variant>` — and `.keys/` lives outside `dist/`
+        entirely (build.py excludes it), so it is unreachable by construction,
+        not by an exclude list somebody has to remember to update.
         """
         repo = Path(__file__).resolve().parent.parent
         spec = (repo / "build" / "NoMorePwn.spec").read_text(encoding="utf-8")
-        self.assertIn('os.walk(os.path.join(_ext, "src"))', spec,
-                      "collection must be rooted at extension/src")
-        self.assertNotIn("extension" + os.sep + ".keys",
-                         str(repo / "extension" / "src"))
+        self.assertIn('os.path.join(ROOT, "extension", "dist")', spec,
+                      "collection must be rooted at extension/dist")
+        self.assertFalse(list((repo / "extension" / "dist").rglob(".keys")),
+                         "the signing key must never live under dist/")
 
         # Whatever the bundled tree contains, it must not include a key.
         bundled = sorted(p.name for p in (self.meipass / "extension").rglob("*")
@@ -1136,10 +1148,9 @@ class BundledExtensionTests(unittest.TestCase):
         self.assertFalse([n for n in bundled if n.endswith(".pem")], bundled)
 
     def test_only_runtime_file_types_are_bundled(self):
-        allowed = {".js", ".json", ".css", ".html"}
         for path in (self.meipass / "extension").rglob("*"):
             if path.is_file():
-                self.assertIn(path.suffix, allowed, f"unexpected file: {path.name}")
+                self.assertIn(path.suffix, self._ALLOWED, f"unexpected file: {path.name}")
 
 
 class VersionComparisonTests(unittest.TestCase):

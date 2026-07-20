@@ -16,16 +16,22 @@ The desktop app holds the master key in its own process's RAM and nowhere
 else — by design. A freshly spawned host process therefore cannot read or
 write vault secrets: it can see that a vault file exists, but not open it.
 
-So this host currently answers status queries only. Actually saving a
-credential needs one of:
+Saving a credential therefore can't happen *in* this process. Two shapes were
+possible:
 
-  a) host → running app IPC (a local named pipe), so the unlocked app does
-     the write and can show the save prompt; or
+  a) host → running app IPC (a local socket), so the unlocked app does the
+     write and can show the save prompt; or
   b) the host prompting for the master password itself, which means a second
      place that handles master passwords.
 
-(a) is the better shape and keeps the key in one process. Until that exists,
-this host is deliberately read-only.
+(a) is the better shape and keeps the key in one process, so it is what this
+host does: ``save-credential`` is forwarded to the running app over a per-user
+``QLocalSocket`` (``NoMorePwn-instance-<user>``), and the app — which holds the
+key — performs the write and runs the save / ask / ignore policy (see
+``controller.handle_ipc_message`` and ``nomorepwn.capture``). This host stays a
+courier: it never opens the vault, and ``ping`` still answers status only. If
+the app is not running, the forward fails with ``app-not-reachable`` rather than
+this process touching the vault.
 
 **Nothing may write to stdout except `_send`.** A stray print corrupts the
 frame stream and the browser drops the connection — which is why the entry

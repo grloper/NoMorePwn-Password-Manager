@@ -4,9 +4,11 @@ A Manifest V3 browser extension that captures credentials **only after the
 login is verified to have succeeded**, instead of on every form submit. This
 avoids the classic password-manager failure: saving the typo you just fixed.
 
-Status: **core architecture, verified by tests.** The save prompt and the
-bridge to the desktop vault are stubbed (`TODO(save-prompt)`); a verified login
-currently logs `Login verified for URL: <url>`.
+Status: **core architecture, verified by tests.** A verified login is sent to
+the desktop app over the native-messaging bridge and saved to *Captured
+Logins*. A login the heuristics *can't* verify (multi-step / SPA flows like
+Google) is no longer dropped — the app asks the user once and remembers the
+answer per origin (see "Capture, verification, and the ask" below).
 
 ## Flow
 
@@ -137,11 +139,26 @@ MV3 extensions. If review friction becomes a problem, dropping the
 
 ## Running it
 
-1. In NoMorePwn: **Settings → Browser extension → Set up browser extension…**
-   This writes the native-messaging host manifest and registers it under HKCU
-   for Chrome, Edge, and Brave. No admin rights needed.
-2. In the browser: `chrome://extensions` → Developer mode → **Load unpacked** →
-   select this `extension/` directory.
+Chrome and Firefox need different manifests, so the extension is built into two
+per-browser folders. Build them (both are also committed under `dist/`):
+
+```bash
+python extension/build.py          # -> extension/dist/chrome and extension/dist/firefox
+```
+
+1. In NoMorePwn: **Settings → Browser extension → Auto-install on browser**.
+   Pick a browser; NoMorePwn writes the native-messaging host manifest, registers
+   it under HKCU (Chrome, Edge, Brave, or Firefox — no admin rights), opens that
+   browser's extensions page, and opens the folder to load.
+2. Finish in the browser — this one click is yours, since browsers don't let an
+   app install an unpacked extension silently:
+   - **Chrome / Edge / Brave:** `chrome://extensions` → Developer mode →
+     **Load unpacked** → select `extension/dist/chrome`.
+   - **Firefox:** `about:debugging#/runtime/this-firefox` → **Load Temporary
+     Add-on…** → pick any file in `extension/dist/firefox`.
+
+Never load the top-level `extension/` source folder — its combined manifest is
+not what either browser expects; load the per-browser `dist/` build instead.
 
 Watch the worker's console via *Inspect views: service worker*; it logs whether
 the desktop app is reachable at startup.
@@ -164,25 +181,42 @@ and a fake native host, and the real MutationObserver against jsdom —
 including that it coalesces 500 mutations into ≤3 evaluations, disconnects on
 settle, and honours the 10s deadline.
 
+## Capture, verification, and the ask
+
+Capture no longer waits for a classic `<form>` submit. `capture.js` also fires
+on a click of a sign-in-looking control and on Enter in a login field (gated on
+a filled password), and reads the password page-wide — because Google and most
+SPA logins submit with a `<button type="button">` + background XHR and never
+dispatch a submit event. Whatever it reads crosses to the background exactly
+once, as before.
+
+The background still tries to *verify* (redirect/nav/cookie score, or the SPA
+DOM verdict). Three outcomes now:
+
+- **Verified** → sent to the app as `{verified:true}` and saved.
+- **Rejected** (401/403, or an SPA error verdict) → wiped, no prompt.
+- **Neither, within the window** (`promptUnverified`) → sent as
+  `{unverified:true}` instead of being dropped. The app decides by *learned
+  per-origin policy*: an origin the user blessed saves automatically, one they
+  rejected is dropped (and the reply tells the worker to stop tracking it), and
+  a brand-new origin makes the app ask once ("Save this login?"). The answer is
+  remembered, so the site becomes automatic or quiet from then on.
+
+The decision itself is a pure function in the desktop app
+(`nomorepwn/capture.py` `plan_capture`), not in a Qt callback, so it is unit
+tested. The learned policy is non-secret per-origin metadata in
+`capture_policy.json` beside `settings.json`; **no credential is ever
+persisted** — an unverified credential still lives only in RAM (the background
+holder, then briefly the app while it asks).
+
+While the vault is **locked**, a capture is queued and the app asks the user to
+unlock, then replays it.
+
 ## Not done yet
 
-**The save path stops at the host.** `bridge.js` sends `save-credential` and
-the host answers `not-implemented`. That is a real architectural gap, not a
-missing function body:
-
-> The browser *spawns* the native host. That process is **not** the running
-> desktop app, and the master key lives only in the running app's RAM. A
-> freshly spawned host can see that a vault file exists; it cannot open it.
-
-Closing it needs either host → app IPC over a local named pipe (better — the
-key stays in one process, and the app can show the save prompt), or the host
-prompting for the master password itself (a second place handling master
-passwords). Also unresolved: what should happen when a verified login arrives
-while the vault is **locked** — queue it (holds the secret far longer than 5
-seconds, against the whole design), prompt to unlock, or drop it.
-
-Other gaps:
-
-- Password-change and 2FA-step detection (both look like a login submit today).
+- Password-change and 2FA-step detection still look like a login submit.
 - CI does not run `npm test`, so the extension can break without anyone noticing.
-- Firefox: `browser.*` polyfill and MV3 differences are untested.
+- Firefox: `browser.*` polyfill and MV3 differences are lightly tested.
+- The prompt fallback holds the credential in the app process while it asks —
+  longer than the background's 5s window, though still only in the trusted
+  process that holds the master key, and never written to disk.

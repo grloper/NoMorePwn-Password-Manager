@@ -214,6 +214,7 @@ class StrengthMeter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setToolTip("Heuristic estimate, not a cracking-time guarantee. With zxcvbn: 10,000 offline guesses per second; the fallback estimates character entropy.")
         self._score = -1
         self._label = ""
         self._fill = 0.0  # animated 0..1

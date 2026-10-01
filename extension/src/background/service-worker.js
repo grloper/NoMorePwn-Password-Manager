@@ -107,14 +107,22 @@ function applyScore(tabId, { rejected, points, evidence }) {
     reject(tabId, OUTCOME.REJECTED_STATUS);
     return;
   }
-  if (!points) return;
-
-  entry.score += points;
-  entry.evidence.push(...evidence);
-
-  if (entry.score >= SUCCESS_THRESHOLD) {
-    verify(tabId, evidence.some((e) => e.includes('cookie')) ? OUTCOME.VERIFIED_SESSION : OUTCOME.VERIFIED_REDIRECT);
+  if (points) {
+    entry.score += points;
+    entry.evidence.push(...evidence);
   }
+
+  // Redirect headers are provisional. Do not save before the destination's
+  // status arrives: a 303 -> /dashboard -> 401 must reject, not save early.
+  if (entry.score >= SUCCESS_THRESHOLD && entry.responseUrl &&
+      entry.responseUrl === entry.navigationUrl) {
+    verify(tabId, entry.evidence.some((e) => e.includes('cookie')) ? OUTCOME.VERIFIED_SESSION : OUTCOME.VERIFIED_REDIRECT);
+  }
+}
+
+function documentUrl(url) {
+  try { const parsed = new URL(url); parsed.hash = ''; return parsed.href; }
+  catch { return null; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,6 +175,14 @@ if (!navigator.userAgent.includes('Firefox')) extraInfoSpec.push('extraHeaders')
 api.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0 || !store.has(details.tabId)) return;
+    if (details.type === 'main_frame') {
+      if (details.statusCode >= 400) {
+        reject(details.tabId, OUTCOME.REJECTED_STATUS);
+        return;
+      }
+      store.get(details.tabId).responseUrl = details.statusCode >= 200 && details.statusCode < 300
+        ? documentUrl(details.url) : null;
+    }
     applyScore(details.tabId, scoreResponse(store.get(details.tabId), details));
   },
   { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
@@ -176,6 +192,7 @@ api.webRequest.onHeadersReceived.addListener(
 // A committed navigation confirms the tab actually landed somewhere.
 api.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0 || !store.has(details.tabId)) return;
+  store.get(details.tabId).navigationUrl = documentUrl(details.url);
   applyScore(details.tabId, scoreNavigation(store.get(details.tabId), details));
 });
 

@@ -156,7 +156,7 @@ class CredentialDetail(QWidget):
             res = strength.evaluate(pw)
             meter = StrengthMeter()
             self._lay.addWidget(meter)
-            meter.set_result(res.score, f"{res.label} · cracks in {res.crack_time_display}")
+            meter.set_result(res.score, f"{res.label} · estimate: {res.crack_time_display}")
 
         try:
             notes = vlt.reveal_notes(cred["id"]) if vlt else ""

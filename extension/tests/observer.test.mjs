@@ -275,6 +275,10 @@ section('3. Background service worker integration');
     responseHeaders: [{ name: 'Location', value: '/dashboard' }],
   });
   await settle();
+  check('redirect headers alone cannot save before the final response', store.has(1));
+  fire('onHeadersReceived', { tabId: 1, statusCode: 200, url: 'https://app.example.com/dashboard', type: 'main_frame', responseHeaders: [] });
+  fire('onCommitted', { tabId: 1, frameId: 0, url: 'https://app.example.com/dashboard', transitionQualifiers: ['server_redirect'] });
+  await settle();
   console.log = realLog;
 
   check('verified login logs the expected line', logs.some((l) => l === 'Login verified for URL: https://app.example.com'), JSON.stringify(logs));
@@ -288,6 +292,15 @@ section('3. Background service worker integration');
   await settle();
   check('401 clears the pending entry', !store.has(2));
   check('wipe() fired on the FAILURE path', wipes >= 1, `wipes=${wipes}`);
+
+  native.sent.length = 0;
+  await submit(10);
+  fire('onHeadersReceived', { tabId: 10, statusCode: 303, url: 'https://app.example.com/login', type: 'main_frame', responseHeaders: [{ name: 'Location', value: '/dashboard' }] });
+  fire('onHeadersReceived', { tabId: 10, statusCode: 401, url: 'https://app.example.com/dashboard', type: 'main_frame', responseHeaders: [] });
+  fire('onCommitted', { tabId: 10, frameId: 0, url: 'https://app.example.com/dashboard', transitionQualifiers: ['server_redirect'] });
+  await settle();
+  check('a redirected final 401 removes the capture', !store.has(10));
+  check('a redirected final 401 never reaches the native host', native.sent.length === 0);
 
   // --- tab closed mid-flight ---
   wipes = 0;
@@ -353,6 +366,7 @@ section('3. Background service worker integration');
   native.sent.length = 0;
   native.reply = { type: 'error', code: 'not-implemented' };
   await submit(8);
+  fire('onHeadersReceived', { tabId: 8, statusCode: 200, url: 'https://app.example.com/dashboard', type: 'main_frame', responseHeaders: [] });
   fire('onCommitted', { tabId: 8, frameId: 0, url: 'https://app.example.com/dashboard', transitionQualifiers: ['server_redirect'] });
   await settle();
   const saveAttempt = native.sent.find((s) => s.message?.type === 'save-credential');

@@ -1360,6 +1360,30 @@ class CaptureFlowTests(unittest.TestCase):
     def _count(self) -> int:
         return len(self.vault.list_credentials())
 
+    def test_locked_capture_is_rejected_without_retaining_password(self):
+        self.ctrl.lock(manual=True)
+        reply = self._ipc(verified=True, targetUrl="https://locked.example/login",
+                          username="audit-user", password="must-not-be-queued")
+        self.assertEqual(reply["code"], "vault-locked")
+        self.assertIsNone(self.ctrl.vault)
+        self.assertFalse(hasattr(self.ctrl, "_pending_captures"))
+
+    def test_failed_capture_returns_an_error_instead_of_success(self):
+        reply = self._ipc(verified=True, targetUrl="https://example.com/login",
+                          username="invalid user", password="fixture-only")
+        self.assertEqual(reply["type"], "error")
+        self.assertEqual(reply["code"], "capture-not-saved")
+        self.assertEqual(self._count(), 0)
+
+    def test_capture_respects_disabled_notifications(self):
+        from unittest.mock import patch
+        self.ctrl.settings.show_notifications = False
+        with patch.object(self.ctrl.tray, "notify") as notify:
+            reply = self._ipc(verified=True, targetUrl="https://example.com/login",
+                              username="audit-user", password="fixture-only")
+        self.assertEqual(reply["type"], "ok")
+        notify.assert_not_called()
+
     def test_verified_capture_saves_and_learns_the_origin(self):
         from nomorepwn import capture
 

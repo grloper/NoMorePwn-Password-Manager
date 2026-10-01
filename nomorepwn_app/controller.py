@@ -48,7 +48,6 @@ class AppController(QObject):
         self.vault: vault.Vault | None = None
         self._quitting = False
         self._tray_hint_shown = False
-        self._pending_captures: list[dict] = []
         # Per-origin "this is / isn't a login" memory, and live refs to any
         # modeless capture prompts so they aren't garbage-collected mid-flight.
         self.capture_policy = capture.CapturePolicy()
@@ -140,13 +139,6 @@ class AppController(QObject):
         self._run_integrity_sweep(vlt)
         self.backups.ensure_initial()
         
-        # Flush pending captures
-        if self._pending_captures:
-            for msg in self._pending_captures:
-                # Re-invoke the IPC handler for each pending message
-                import json
-                self.handle_ipc_message(json.dumps(msg).encode("utf-8"))
-            self._pending_captures.clear()
 
     def _on_vault_created(self, vlt: "vault.Vault") -> None:
         """A vault was just created (first run). Offer to set up recovery so a
@@ -258,15 +250,19 @@ class AppController(QObject):
                 reply["policy"] = capture.IGNORE  # let the extension stop tracking it
             return self._reply(reply)
 
-        # Everything else needs an unlocked vault. Queue until the user unlocks.
+        # A locked vault must not retain new passwords in a plaintext queue.
+        # Ask the user to unlock and retry; the extension wipes its holder.
         if self.vault is None:
-            self._pending_captures.append(msg)
             self.window.show_unlock()
             self._present_window()
-            return self._reply({"type": "ok", "queued": True})
+            self.ctx.toast.show("Unlock the vault, then sign in again to save this login.", "info", 6000)
+            return self._reply({"type": "error", "code": "vault-locked",
+                                "message": "Unlock NoMorePwn and retry the login."})
 
         if plan == capture.PLAN_SAVE:
-            self._save_captured(msg, origin)
+            error = self._save_captured(msg, origin)
+            if error:
+                return self._reply({"type": "error", "code": "capture-not-saved", "message": error})
             return self._reply({"type": "ok"})
 
         if plan == capture.PLAN_EDITOR:
@@ -289,7 +285,7 @@ class AppController(QObject):
         except ValueError:
             return target_url
 
-    def _save_captured(self, msg: dict, origin: str) -> None:
+    def _save_captured(self, msg: dict, origin: str) -> str | None:
         """Add a captured credential to Captured Logins and learn the origin."""
         target_url = msg.get("targetUrl", "")
         service_name = self._capture_service_name(target_url)
@@ -306,19 +302,18 @@ class AppController(QObject):
             )
         except (vault.VaultError, ValueError) as exc:
             # A duplicate (VaultError) or a value the validators reject
-            # (ValidationError is a ValueError — e.g. a host:port service name)
+            # (ValidationError is a ValueError - e.g. an invalid username)
             # is not fatal: surface it quietly rather than dropping to a generic
             # IPC error the user never sees.
             self.ctx.toast.show(f"Couldn't save capture: {exc}", "error", 4000)
-            return
+            return str(exc)
 
         self.capture_policy.remember(origin, capture.SAVE)
 
-        from PySide6.QtWidgets import QSystemTrayIcon
-        self.tray.tray.showMessage(
+        self._notify(
             "Credential Captured",
             f"Saved {username} for {service_name} to Captured Logins.",
-            QSystemTrayIcon.Information, 5000)
+        )
 
         if self.window._shell and hasattr(self.window._shell, "vault_view"):
             self.window._shell.vault_view.refresh()

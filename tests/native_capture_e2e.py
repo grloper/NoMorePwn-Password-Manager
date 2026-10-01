@@ -102,7 +102,7 @@ try:
     results.append({'scenario':'unlock does not silently persist a rejected capture','count':len(ctrl.vault.list_credentials())})
     results.append({'scenario':'invalid capture reports failure','reply':request({'type':'save-credential','verified':True,
                     'targetUrl':'https://invalid.example.invalid/login','username':'invalid user','password':'fixture-only'})})
-    assert results[1]['after']==results[1]['before']+1
+    assert results[1]['after']==results[1]['before']+1, results[1]
     assert results[3]['reply']['code']=='vault-locked'
     assert results[-1]['reply']['code']=='capture-not-saved'
     assert b'fictional-capture-secret' not in config.DB_PATH.read_bytes()

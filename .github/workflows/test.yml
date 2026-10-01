@@ -8,6 +8,7 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -24,6 +25,9 @@ jobs:
         with:
           node-version: '22'
       - run: python -m pip install -r requirements-test.txt
+      - name: Install Qt Linux runtime libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
       - run: python -m playwright install --with-deps chromium
       - run: python -m unittest discover -s tests -v
       - run: npm ci --ignore-scripts

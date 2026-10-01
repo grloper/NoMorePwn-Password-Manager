@@ -17,6 +17,7 @@ import uuid as uuid_mod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 
 from . import backup, crypto, db, recovery, validation
 
@@ -170,6 +171,8 @@ class Vault:
     def __init__(self, db_path: str | Path, key: bytes):
         self.db_path = Path(db_path)
         self._key = key
+        self._state_lock = Lock()
+        self._locked = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -257,18 +260,22 @@ class Vault:
 
     def lock(self) -> None:
         """Drop the in-memory key. The object is unusable afterwards."""
-        self._key = b""
+        with self._state_lock:
+            self._locked = True
+            self._key = b""
 
-    def _require_unlocked(self) -> None:
-        if not self._key:
-            raise VaultLockedError("Vault is locked. Unlock it to continue.")
+    def _require_unlocked(self) -> bytes:
+        """Check revocation and capture the current key as one state operation."""
+        with self._state_lock:
+            if self._locked or not self._key:
+                raise VaultLockedError("Vault is locked. Unlock it to continue.")
+            return self._key
 
     @property
     def session_key(self) -> bytes:
         """The in-memory master key, for callers that own its lifetime
         (the desktop app holds it until the vault is locked)."""
-        self._require_unlocked()
-        return self._key
+        return self._require_unlocked()
 
     # ------------------------------------------------------------------
     # Master-key recovery & rekey
@@ -329,8 +336,11 @@ class Vault:
         written to ``<vault>.pre-rekey`` first (sibling of invariant 17) — the
         only recovery path if a rekey is interrupted — and the whole rewrite
         runs in a single transaction, so a failure rolls back untouched.
+
+        A rekey already in progress may finish after lock: its database then
+        opens with the new password, but the revoked session stays unusable.
         """
-        self._require_unlocked()
+        old_key = self._require_unlocked()
         if len(new_master_password) < 10:
             raise VaultError("Master password must be at least 10 characters.")
 
@@ -344,7 +354,6 @@ class Vault:
                 "The vault was left untouched."
             ) from exc
 
-        old_key = self._key
         new_salt = crypto.generate_salt()
         kdf_name, kdf_params = crypto.default_kdf()
         new_key = crypto.derive_key(new_master_password, new_salt, kdf_name, kdf_params)
@@ -393,7 +402,12 @@ class Vault:
             db.set_meta(conn, "kdf_salt", new_salt.hex())
             db.set_meta(conn, "verifier", crypto.make_verifier(new_key).hex())
 
-        self._key = new_key
+        # Publishing the new key must not resurrect a concurrently locked
+        # session. The durable rewrite succeeded either way; callers can open
+        # a fresh session with the new password.
+        with self._state_lock:
+            if not self._locked:
+                self._key = new_key
 
     # ------------------------------------------------------------------
     # Credential CRUD (encrypt-before-write, decrypt-on-demand)

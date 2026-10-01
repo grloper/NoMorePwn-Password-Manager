@@ -944,7 +944,7 @@ class SettingsExtensionSectionTests(unittest.TestCase):
         self.assertTrue(view.ext_status.text())
         # The load-unpacked instructions must name the real folder, or the
         # user is told to select a path that does not exist.
-        self.assertIn(str(browser_bridge.extension_dir()), view.ext_steps.text())
+        self.assertIn(str(browser_bridge.extension_dir(view.ext_browser.currentData())), view.ext_steps.text())
 
     def test_update_section_reports_the_running_version(self):
         from nomorepwn_app import __version__
@@ -983,13 +983,19 @@ class SettingsExtensionSectionTests(unittest.TestCase):
         from nomorepwn_app import browser_bridge
 
         view = SettingsView(self.ctx, on_change=lambda: None)
-        # Default selection resolves to the Chrome build.
+        # The default follows the user's browser; choose Chrome explicitly so
+        # the test does not depend on the host's registry/default browser.
+        view.ext_browser.setCurrentIndex(view.ext_browser.findData("Chrome"))
         self.assertIn(str(browser_bridge.extension_dir("chrome")), view.ext_steps.text())
 
         idx = view.ext_browser.findData("Firefox")
         self.assertGreaterEqual(idx, 0, "Firefox must be offered as a target")
         view.ext_browser.setCurrentIndex(idx)
         self.assertIn(str(browser_bridge.extension_dir("Firefox")), view.ext_steps.text())
+        self.assertIn("Load Temporary Add-on", view.ext_steps.text())
+        self.assertIn("manifest.json", view.ext_steps.text())
+        self.assertNotIn("Developer mode", view.ext_steps.text())
+        self.assertNotIn("Load unpacked", view.ext_steps.text())
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")

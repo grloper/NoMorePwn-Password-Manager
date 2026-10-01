@@ -645,6 +645,15 @@ class SettingsView(QWidget):
             self.ext_steps.setText("")
             return
         page_url = browser_bridge.extensions_page(browser)
+        if browser == "Firefox":
+            self.ext_steps.setText(
+                f"To temporarily load in Firefox:\n"
+                f"1.  Open  {page_url}\n"
+                f"2.  Click “Load Temporary Add-on”.\n"
+                f"3.  Choose the manifest file:\n"
+                f"      {folder / 'manifest.json'}\n"
+                f"Firefox removes temporary add-ons when it restarts.")
+            return
         self.ext_steps.setText(
             f"To finish loading in {browser}:\n"
             f"1.  Open  {page_url}\n"
@@ -687,8 +696,9 @@ class SettingsView(QWidget):
         if outcome.page_opened:
             steps.append(f"opened {browser}")
         steps.append("opened the folder & copied its path")
+        load_action = "Load Temporary Add-on" if browser == "Firefox" else "Load unpacked"
         self._ctx.toast.show(
-            f"NoMorePwn {', '.join(steps)}. Click “Load unpacked” to finish.",
+            f"NoMorePwn {', '.join(steps)}. Click “{load_action}” to finish.",
             "success", 5000)
 
     def _remove_extension(self) -> None:

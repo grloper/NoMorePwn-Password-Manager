@@ -25,6 +25,10 @@ class Handler(BaseHTTPRequestHandler):
         <label>Password<input name="password" type="password" autocomplete="current-password"></label><button>Sign in</button></form>'''
         if parsed.path=='/dashboard' and mode=='reject-late':
             self.send_response(401);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(b'<h1>Invalid credentials</h1>');return
+        if parsed.path=='/dashboard' and mode in ('chain-cross','chain-login'):
+            self.send_response(302)
+            location=(f'http://attacker.other.co.uk:{self.server.server_port}/dashboard' if mode=='chain-cross' else '/login?error=1')
+            self.send_header('Location',location);self.end_headers();return
         if parsed.path=='/dashboard':body='<h1>Dashboard - local fixture</h1><p>Signed in as audit-user</p>'
         self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(body.encode())
     def do_POST(self):
@@ -54,7 +58,7 @@ try:
             sw.evaluate('''() => { globalThis.auditNative=[]; chrome.runtime.sendNativeMessage=(host,message,callback)=>{
                 auditNative.push({host,verified:message.verified===true,unverified:message.unverified===true,targetOrigin:new URL(message.targetUrl).origin});
                 callback({type:"ok"}); }; }''')
-            for mode in ['valid','reject','cross','reject-late']:
+            for mode in ['valid','reject','cross','reject-late','chain-cross','chain-login']:
                 sw.evaluate('() => { auditNative.length=0; }')
                 page=context.new_page()
                 origin='login.audit.co.uk' if mode=='cross' else '127.0.0.1'
@@ -80,3 +84,5 @@ assert results[0]["calls"] and results[0]["calls"][0]["verified"]
 assert results[1]["calls"] == []
 assert results[2]["calls"] and all(not c["verified"] and c["unverified"] for c in results[2]["calls"])
 assert results[3]["calls"] == []
+for result in results[4:]:
+    assert result['calls'] and all(not c['verified'] and c['unverified'] for c in result['calls']), result

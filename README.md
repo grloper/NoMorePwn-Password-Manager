@@ -27,7 +27,7 @@ Install an extension build from `extension/dist/chrome` or `extension/dist/firef
 
 ## Executed evidence
 
-The Windows audit passed 261 Python tests, 71 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled four local login fixtures: success, direct HTTP failure, cross-origin navigation and a redirect ending in HTTP 401. Its native API was intercepted for this browser test.
+The Windows audit passed 261 Python tests, 73 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled six local login fixtures: success, direct HTTP failure, cross-origin navigation, a redirect ending in HTTP 401, and multi-hop redirects ending at another origin or back at the login form. Its native API was intercepted for this browser test.
 
 A separate real native-host child communicated through Qt local IPC with the desktop controller and an encrypted disposable vault. Actual GUI unlock, saves, lock/re-unlock, failed-save acknowledgements and locked-capture rejection were exercised. This is component-chain evidence, not proof of a fully installed browser-to-desktop setup.
 

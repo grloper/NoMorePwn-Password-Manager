@@ -114,8 +114,11 @@ function applyScore(tabId, { rejected, points, evidence }) {
 
   // Redirect headers are provisional. Do not save before the destination's
   // status arrives: a 303 -> /dashboard -> 401 must reject, not save early.
+  // Earlier redirect scores also cannot bless a final foreign origin or a
+  // return to a login route. Re-evaluate that destination independently.
   if (entry.score >= SUCCESS_THRESHOLD && entry.responseUrl &&
-      entry.responseUrl === entry.navigationUrl) {
+      entry.responseUrl === entry.navigationUrl &&
+      scoreNavigation(entry, { url: entry.navigationUrl }).points > 0) {
     verify(tabId, entry.evidence.some((e) => e.includes('cookie')) ? OUTCOME.VERIFIED_SESSION : OUTCOME.VERIFIED_REDIRECT);
   }
 }

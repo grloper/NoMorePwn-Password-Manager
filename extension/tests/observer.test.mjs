@@ -302,6 +302,20 @@ section('3. Background service worker integration');
   check('a redirected final 401 removes the capture', !store.has(10));
   check('a redirected final 401 never reaches the native host', native.sent.length === 0);
 
+  // Provisional redirect scores cannot bless a different origin or a return
+  // to the login form, even when the final response is HTTP 200.
+  for (const [tabId, destination] of [[11, 'https://foreign.example/dashboard'], [12, 'https://app.example.com/login?error=1']]) {
+    native.sent.length = 0;
+    await submit(tabId);
+    fire('onHeadersReceived', { tabId, statusCode: 303, url: 'https://app.example.com/login', type: 'main_frame', responseHeaders: [{ name: 'Location', value: '/dashboard' }] });
+    fire('onHeadersReceived', { tabId, statusCode: 302, url: 'https://app.example.com/dashboard', type: 'main_frame', responseHeaders: [{ name: 'Location', value: destination }] });
+    fire('onHeadersReceived', { tabId, statusCode: 200, url: destination, type: 'main_frame', responseHeaders: [] });
+    fire('onCommitted', { tabId, frameId: 0, url: destination, transitionQualifiers: ['server_redirect'] });
+    await settle();
+    check(`redirect chain ending at ${destination} stays unverified`, store.has(tabId) && native.sent.length === 0);
+    fire('onRemoved', tabId);
+  }
+
   // --- tab closed mid-flight ---
   wipes = 0;
   await submit(3);

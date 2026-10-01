@@ -44,6 +44,10 @@ class InvalidMasterPasswordError(VaultError):
     pass
 
 
+class VaultLockedError(VaultError):
+    """The session has been revoked; unlock a new Vault instance."""
+
+
 class DuplicateCredentialError(VaultError):
     pass
 
@@ -85,7 +89,8 @@ def vault_exists(db_path: str | Path) -> bool:
 
 def create_vault(db_path: str | Path, master_password: str) -> None:
     """Initialize schema, KDF metadata, and the master-key verifier."""
-    if vault_exists(db_path):
+    # A missing verifier must never permit overwriting existing encrypted data.
+    if Path(db_path).exists() and Path(db_path).stat().st_size > 0:
         raise VaultAlreadyExistsError(f"A vault already exists at {db_path}.")
     if len(master_password) < 10:
         raise VaultError("Master password must be at least 10 characters.")
@@ -184,13 +189,15 @@ class Vault:
         if not all((kdf_name, kdf_params_raw, salt_hex, verifier_hex)):
             raise VaultError("Vault metadata is incomplete or corrupted.")
 
-        key = crypto.derive_key(
-            master_password,
-            bytes.fromhex(salt_hex),
-            kdf_name,
-            crypto.kdf_params_from_json(kdf_params_raw),
-        )
-        if not crypto.check_verifier(key, bytes.fromhex(verifier_hex)):
+        try:
+            key = crypto.derive_key(
+                master_password, bytes.fromhex(salt_hex), kdf_name,
+                crypto.kdf_params_from_json(kdf_params_raw),
+            )
+            verifier = bytes.fromhex(verifier_hex)
+        except (ValueError, TypeError, crypto.CryptoError) as exc:
+            raise VaultError("Vault metadata is invalid or exceeds the supported KDF budget.") from exc
+        if not crypto.check_verifier(key, verifier):
             raise InvalidMasterPasswordError("Master password is incorrect.")
         # Only migrate a vault the caller has proved they can open, and only
         # after the verifier passes — never on a wrong-password attempt.
@@ -252,10 +259,15 @@ class Vault:
         """Drop the in-memory key. The object is unusable afterwards."""
         self._key = b""
 
+    def _require_unlocked(self) -> None:
+        if not self._key:
+            raise VaultLockedError("Vault is locked. Unlock it to continue.")
+
     @property
     def session_key(self) -> bytes:
         """The in-memory master key, for callers that own its lifetime
         (the desktop app holds it until the vault is locked)."""
+        self._require_unlocked()
         return self._key
 
     # ------------------------------------------------------------------
@@ -265,6 +277,7 @@ class Vault:
     def _ensure_vault_id(self) -> str:
         """The vault's non-secret id, generated on demand for vaults created
         before recovery existed."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             vault_id = db.get_meta(conn, "vault_id")
             if vault_id is None:
@@ -283,6 +296,7 @@ class Vault:
         recovery code, the escrow blob, and (for ``kit+totp``) the authenticator
         seed exist only in the returned dict and wherever the user stores them.
         """
+        self._require_unlocked()
         if mode not in recovery._MODES:
             raise VaultError(f"Unknown recovery mode: {mode!r}.")
         vault_id = self._ensure_vault_id()
@@ -316,6 +330,7 @@ class Vault:
         only recovery path if a rekey is interrupted — and the whole rewrite
         runs in a single transaction, so a failure rolls back untouched.
         """
+        self._require_unlocked()
         if len(new_master_password) < 10:
             raise VaultError("Master password must be at least 10 characters.")
 
@@ -394,6 +409,7 @@ class Vault:
         group_name: str = "",
         alt_login: str = "",
     ) -> int:
+        self._require_unlocked()
         service_name = validation.validate_service_name(service_name)
         username = validation.validate_username(username)
         password = validation.validate_password(password)
@@ -441,6 +457,7 @@ class Vault:
         return cred_id
 
     def update_password(self, cred_id: int, new_password: str) -> None:
+        self._require_unlocked()
         new_password = validation.validate_password(new_password)
         with db.connect(self.db_path) as conn:
             row = db.get_credential(conn, cred_id)
@@ -483,6 +500,7 @@ class Vault:
         known data-loss trap in this codebase. A new field should not repeat
         it. Pass ``""`` explicitly to clear the group.
         """
+        self._require_unlocked()
         service_name = validation.validate_service_name(service_name)
         username = validation.validate_username(username)
         notes = validation.validate_notes(notes)
@@ -517,11 +535,13 @@ class Vault:
 
     def list_groups(self) -> list[str]:
         """Group names currently in use, alphabetically. Never includes ""."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             return db.list_group_names(conn)
 
     def list_identifiers(self) -> list[str]:
         """Login identifiers already in use, most-reused first (autocomplete)."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             return db.list_identifiers(conn)
 
@@ -531,6 +551,7 @@ class Vault:
         Returns the validated name actually stored, so callers can reflect
         the trimmed value back into the UI.
         """
+        self._require_unlocked()
         group_name = validation.validate_group_name(group_name)
         with db.connect(self.db_path) as conn:
             if db.get_credential(conn, cred_id) is None:
@@ -539,23 +560,27 @@ class Vault:
         return group_name
 
     def set_mfa(self, cred_id: int, enabled: bool) -> None:
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             if db.get_credential(conn, cred_id) is None:
                 raise VaultError("Credential not found.")
             db.set_mfa_enabled(conn, cred_id, enabled, _now_iso())
 
     def delete_credential(self, cred_id: int) -> None:
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             db.delete_credential(conn, cred_id)
 
     def list_credentials(self) -> list[dict]:
         """Metadata for all credentials. Secrets stay encrypted."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             rows = db.list_credentials(conn)
         return [self._row_to_public(row) for row in rows]
 
     def reveal_password(self, cred_id: int) -> str:
         """Decrypt one password on demand."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             row = db.get_credential(conn, cred_id)
         if row is None:
@@ -566,6 +591,7 @@ class Vault:
         return plaintext.decode("utf-8")
 
     def reveal_notes(self, cred_id: int) -> str:
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             row = db.get_credential(conn, cred_id)
         if row is None:
@@ -578,6 +604,7 @@ class Vault:
 
     def password_history(self, cred_id: int) -> list[dict]:
         """History metadata (timestamps + checksums), newest first."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             rows = db.list_history(conn, cred_id)
         return [
@@ -602,6 +629,7 @@ class Vault:
         automatic backups keep working without prompting — while the
         backup FILE still needs this passphrase to open.
         """
+        self._require_unlocked()
         if len(passphrase) < 8:
             raise VaultError("Backup passphrase must be at least 8 characters.")
         salt = crypto.generate_salt()
@@ -616,16 +644,19 @@ class Vault:
 
     def clear_backup_passphrase(self) -> None:
         """Fall back to protecting backups with the master password."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             for key in (_BK_NAME, _BK_PARAMS, _BK_SALT, _BK_WRAPPED):
                 db.delete_meta(conn, key)
 
     def has_backup_passphrase(self) -> bool:
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             return db.get_meta(conn, _BK_WRAPPED) is not None
 
     def backup_material(self) -> dict:
         """Key + KDF metadata used to seal (and later re-open) a backup."""
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             wrapped = db.get_meta(conn, _BK_WRAPPED)
             if wrapped:
@@ -655,6 +686,7 @@ class Vault:
 
     def write_backup(self, dest_path) -> "Path":
         """Write an encrypted backup of this vault to ``dest_path``."""
+        self._require_unlocked()
         material = self.backup_material()
         return backup.write_backup(
             self.db_path, dest_path, material["key"],
@@ -669,6 +701,7 @@ class Vault:
         ``(imported, skipped)``. Existing entries are never overwritten,
         so importing is always additive and safe.
         """
+        self._require_unlocked()
         imported = skipped = 0
         for cred in other.list_credentials():
             try:
@@ -703,6 +736,7 @@ class Vault:
            with its row-bound AAD — the cryptographic proof (AES-GCM tag),
            which an attacker cannot forge without the master key.
         """
+        self._require_unlocked()
         issues: list[IntegrityIssue] = []
         with db.connect(self.db_path) as conn:
             creds = db.list_credentials(conn)
@@ -754,6 +788,7 @@ class Vault:
     # ------------------------------------------------------------------
 
     def _row_to_public(self, row) -> dict:
+        self._require_unlocked()
         last_changed = self._last_changed(row["id"])
         return {
             "id": row["id"],
@@ -771,6 +806,7 @@ class Vault:
         }
 
     def _last_changed(self, cred_id: int) -> str | None:
+        self._require_unlocked()
         with db.connect(self.db_path) as conn:
             latest = db.latest_history_entry(conn, cred_id)
         return latest["changed_at"] if latest else None

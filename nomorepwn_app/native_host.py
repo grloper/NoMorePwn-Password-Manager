@@ -76,7 +76,8 @@ def _read(stream) -> dict | None:
     if len(payload) < length:
         return None
     try:
-        return json.loads(payload.decode("utf-8"))
+        message = json.loads(payload.decode("utf-8"))
+        return message if isinstance(message, dict) else {"type": "__malformed__"}
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {"type": "__malformed__"}
 

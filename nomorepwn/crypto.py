@@ -77,6 +77,31 @@ def default_kdf() -> tuple[str, dict]:
     return "pbkdf2_sha256", dict(DEFAULT_PBKDF2_PARAMS)
 
 
+def validate_kdf(kdf_name: str, params: dict) -> None:
+    """Reject malformed or resource-exhausting metadata before running a KDF.
+
+    Bounds define the desktop import/unlock budget. Custom heavier files are
+    rejected unchanged; standard application defaults remain supported.
+    """
+    if not isinstance(params, dict):
+        raise CryptoError("KDF parameters must be an object.")
+    bounds = {
+        "argon2id": {"time_cost": (1, 10), "memory_cost": (8, 262_144),
+                     "parallelism": (1, 16)},
+        "pbkdf2_sha256": {"iterations": (PBKDF2_MIN_ITERATIONS, 2_000_000)},
+    }
+    if kdf_name not in bounds:
+        raise CryptoError("Unsupported KDF configuration.")
+    for name, (low, high) in bounds[kdf_name].items():
+        value = params.get(name)
+        if type(value) is not int or not low <= value <= high:
+            raise CryptoError(f"KDF parameter {name} is outside the supported range.")
+    if kdf_name == "argon2id" and params["memory_cost"] * params["time_cost"] > 655_360:
+        raise CryptoError("Argon2 configuration exceeds the desktop work budget.")
+    if kdf_name == "argon2id" and params["memory_cost"] < 8 * params["parallelism"]:
+        raise CryptoError("Argon2 memory must be at least eight times parallelism.")
+
+
 def derive_key(master_password: str, salt: bytes, kdf_name: str, kdf_params: dict) -> bytes:
     """Stretch the master password into a 256-bit key.
 
@@ -88,6 +113,7 @@ def derive_key(master_password: str, salt: bytes, kdf_name: str, kdf_params: dic
     if len(salt) != SALT_LEN:
         raise CryptoError("Invalid salt length.")
 
+    validate_kdf(kdf_name, kdf_params)
     secret = master_password.encode("utf-8")
 
     if kdf_name == "argon2id":

@@ -212,6 +212,8 @@ class AppController(QObject):
             msg = json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return json.dumps({"type": "error", "code": "bad-json"}).encode("utf-8")
+        if not isinstance(msg, dict):
+            return json.dumps({"type": "error", "code": "bad-json"}).encode("utf-8")
         if msg.get("type") != "save-credential":
             return None
         try:

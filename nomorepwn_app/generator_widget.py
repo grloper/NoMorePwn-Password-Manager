@@ -243,7 +243,7 @@ class GeneratorPanel(QWidget):
         self.output.setText(secret)
         self.output.setCursorPosition(0)  # show the start, not the tail, for long values
         result = strength.evaluate(secret)
-        self.meter.set_result(result.score, f"{result.label} · cracks in {result.crack_time_display}")
+        self.meter.set_result(result.score, f"{result.label} · estimate: {result.crack_time_display}")
         self.generated.emit(secret)
 
     def value(self) -> str:

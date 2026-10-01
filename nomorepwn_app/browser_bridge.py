@@ -421,7 +421,13 @@ def _ensure_launcher() -> Path:
     launcher = _launcher_path()
     launcher.parent.mkdir(parents=True, exist_ok=True)
     quoted = " ".join(f'"{a}"' if " " in a else a for a in args)
-    launcher.write_text(f'@echo off\r\n"{exe}" {quoted} %*\r\n', encoding="utf-8")
+    # A browser starts the host in its data directory, not the source checkout.
+    # Source runs must resolve our package without relying on inherited PYTHONPATH.
+    source_cwd = ""
+    if not getattr(sys, "frozen", False):
+        root = str(Path(__file__).resolve().parent.parent).replace("%", "%%")
+        source_cwd = f'cd /d "{root}"\r\n'
+    launcher.write_text(f'@echo off\r\n{source_cwd}"{exe}" {quoted} %*\r\n', encoding="utf-8")
     return launcher
 
 

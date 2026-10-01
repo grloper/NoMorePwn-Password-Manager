@@ -64,16 +64,6 @@ function absoluteUrl(url, base) {
   }
 }
 
-function isIpLiteral(host) {
-  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(':');
-}
-
-/** Registrable-ish domain: the last two dot-labels (no Public Suffix List here). */
-function baseDomain(host) {
-  const labels = host.split('.').filter(Boolean);
-  return labels.length <= 2 ? host : labels.slice(-2).join('.');
-}
-
 /**
  * Is `url` on the same site as the login page `base`?
  *
@@ -83,11 +73,10 @@ function baseDomain(host) {
  * inflates the score toward a false "verified". Only the login site's own
  * responses are evidence.
  *
- * "Same site" is same scheme + same registrable domain, approximated by the
- * last two labels because an extension has no Public Suffix List. The residual
- * gap (two sibling `*.co.uk` sites in one tab) is far narrower than the bug it
- * closes, and IP literals fall back to exact-host equality so `1.2.3.4` and
- * `9.8.3.4` are never grouped.
+ * Only the exact origin can provide automatic verification evidence. Guessing
+ * a registrable domain from the last two labels groups unrelated co.uk and
+ * github.io tenants together. Cross-origin/subdomain SSO can use the existing
+ * unverified confirmation path instead of silently trusting another origin.
  */
 function isSameSite(url, base) {
   let a;
@@ -102,12 +91,7 @@ function isSameSite(url, base) {
   } catch {
     return false;
   }
-  if (a.protocol !== b.protocol) return false;
-  const ha = a.hostname.toLowerCase();
-  const hb = b.hostname.toLowerCase();
-  if (ha === hb) return true;
-  if (isIpLiteral(ha) || isIpLiteral(hb)) return false;
-  return baseDomain(ha) === baseDomain(hb);
+  return a.origin !== 'null' && a.origin === b.origin;
 }
 
 function headerValues(headers, name) {

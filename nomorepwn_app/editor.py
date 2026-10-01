@@ -347,7 +347,7 @@ class CredentialEditor(QWidget):
         pw = self.password.text()
         if pw:
             res = strength.evaluate(pw)
-            self.meter.set_result(res.score, f"{res.label} · cracks in {res.crack_time_display}")
+            self.meter.set_result(res.score, f"{res.label} · estimate: {res.crack_time_display}")
         else:
             self.meter.clear()
 

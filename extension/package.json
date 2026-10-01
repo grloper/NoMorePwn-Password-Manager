@@ -5,7 +5,7 @@
   "description": "NoMorePwn browser extension — verified login capture.",
   "type": "module",
   "scripts": {
-    "test": "node tests/observer.test.mjs"
+    "test": "node tests/observer.test.mjs && node --test tests/origin-boundary.test.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.0.0"

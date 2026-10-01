@@ -150,10 +150,12 @@ def _handle(message: dict) -> dict:
             payload = json.dumps(message).encode("utf-8")
             sock.write(payload)
             sock.flush()
-            if not sock.waitForBytesWritten(1000):
+            # flush() can synchronously drain the queue on Unix. Waiting for a
+            # future write signal then returns false despite a successful send.
+            if sock.bytesToWrite() > 0 and not sock.waitForBytesWritten(1000):
                 return {"type": "error", "code": "ipc-write-failed", "message": "Failed to send data."}
                 
-            if not sock.waitForReadyRead(3000):
+            if sock.bytesAvailable() == 0 and not sock.waitForReadyRead(3000):
                 return {"type": "error", "code": "ipc-timeout", "message": "App did not respond."}
                 
             response_data = sock.readAll().data()

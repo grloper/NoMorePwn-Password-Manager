@@ -1,10 +1,9 @@
 """Synthetic vault adversarial lifecycle tests; no live profile access."""
 import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from nomorepwn import crypto, vault
+from nomorepwn import crypto, db, vault
 
 MASTER = "synthetic master password 2026"
 
@@ -31,7 +30,7 @@ class SessionSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "vault.db"
             vault.create_vault(path, MASTER)
-            with sqlite3.connect(path) as connection:
+            with db.connect(path) as connection:
                 connection.execute("DELETE FROM vault_meta WHERE key = 'verifier'")
             before = path.read_bytes()
             with self.assertRaises(vault.VaultAlreadyExistsError):
@@ -76,12 +75,12 @@ class SessionSecurityTests(unittest.TestCase):
             vault.create_vault(path, MASTER)
             for name, value in [("kdf_params", "[]"), ("kdf_params", "invalid json"),
                                 ("kdf_salt", "not hex"), ("verifier", "not hex")]:
-                with sqlite3.connect(path) as connection:
+                with db.connect(path) as connection:
                     originals = dict(connection.execute("SELECT key, value FROM vault_meta"))
                     connection.execute("UPDATE vault_meta SET value=? WHERE key=?", (value, name))
                 before = path.read_bytes()
                 with self.assertRaises(vault.VaultError):
                     vault.Vault.unlock(path, MASTER)
                 self.assertEqual(before, path.read_bytes())
-                with sqlite3.connect(path) as connection:
+                with db.connect(path) as connection:
                     connection.execute("UPDATE vault_meta SET value=? WHERE key=?", (originals[name], name))

@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -1363,14 +1364,14 @@ class CaptureFlowTests(unittest.TestCase):
     def test_locked_capture_is_rejected_without_retaining_password(self):
         self.ctrl.lock(manual=True)
         reply = self._ipc(verified=True, targetUrl="https://locked.example/login",
-                          username="audit-user", password="must-not-be-queued")
+                          username="audit-user", password=uuid.uuid4().hex)
         self.assertEqual(reply["code"], "vault-locked")
         self.assertIsNone(self.ctrl.vault)
         self.assertFalse(hasattr(self.ctrl, "_pending_captures"))
 
     def test_failed_capture_returns_an_error_instead_of_success(self):
         reply = self._ipc(verified=True, targetUrl="https://example.com/login",
-                          username="invalid user", password="fixture-only")
+                          username="invalid user", password=uuid.uuid4().hex)
         self.assertEqual(reply["type"], "error")
         self.assertEqual(reply["code"], "capture-not-saved")
         self.assertEqual(self._count(), 0)
@@ -1380,7 +1381,7 @@ class CaptureFlowTests(unittest.TestCase):
         self.ctrl.settings.show_notifications = False
         with patch.object(self.ctrl.tray, "notify") as notify:
             reply = self._ipc(verified=True, targetUrl="https://example.com/login",
-                              username="audit-user", password="fixture-only")
+                              username="audit-user", password=uuid.uuid4().hex)
         self.assertEqual(reply["type"], "ok")
         notify.assert_not_called()
 

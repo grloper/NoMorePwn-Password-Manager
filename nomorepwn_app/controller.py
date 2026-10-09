@@ -203,17 +203,22 @@ class AppController(QObject):
         self.window.activateWindow()
 
     def handle_ipc_message(self, data: bytes) -> bytes | None:
+        """Handle one authenticated IPC message: JSON carrying the install token."""
         import json
 
-        if data == b"show":
-            self.show_window()
-            return b"ok"
+        from nomorepwn import ipc_auth
+
         try:
             msg = json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return json.dumps({"type": "error", "code": "bad-json"}).encode("utf-8")
         if not isinstance(msg, dict):
             return json.dumps({"type": "error", "code": "bad-json"}).encode("utf-8")
+        if not ipc_auth.verify(msg.get("token")):
+            return json.dumps({"type": "error", "code": "unauthorized"}).encode("utf-8")
+        if msg.get("type") == "show":
+            self.show_window()
+            return b"ok"
         if msg.get("type") != "save-credential":
             return None
         try:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import getpass
+import json
 import sys
 
 from PySide6.QtCore import QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
+
+from nomorepwn import ipc_auth
 
 from . import APP_DISPLAY_NAME, APP_NAME, ORG_NAME, __version__, icons
 
@@ -25,7 +28,13 @@ def _already_running_then_show() -> bool:
     sock = QLocalSocket()
     sock.connectToServer(_server_name())
     if sock.waitForConnected(300):
-        sock.write(b"show")
+        token = ipc_auth.read_token()
+        if token is None:
+            # Cannot authenticate (no token yet); still treat the running
+            # instance as the owner of the lock and do not start a second one.
+            sock.disconnectFromServer()
+            return True
+        sock.write(json.dumps({"type": "show", "token": token}).encode("utf-8"))
         sock.flush()
         sock.waitForBytesWritten(300)
         sock.disconnectFromServer()
@@ -53,8 +62,12 @@ def main() -> int:
     controller = AppController(app)
 
     # Listen for future launches asking us to show the window.
+    # Ensure the per-install token exists before accepting connections, and
+    # restrict the socket to the current user.
+    ipc_auth.load_or_create_token()
     QLocalServer.removeServer(_server_name())
     server = QLocalServer()
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
     server.listen(_server_name())
 
     def _on_new_connection():

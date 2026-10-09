@@ -5,7 +5,11 @@ real accounts, external services, installed profiles or production vaults.
 """
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json, os, tempfile, threading, time
+import json
+import os
+import tempfile
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 

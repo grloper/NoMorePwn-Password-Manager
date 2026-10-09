@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
@@ -13,7 +12,7 @@ from PySide6.QtWidgets import (
 from nomorepwn import groups, vault
 
 from . import components, icons, theme
-from .components import Avatar, Pill
+from .components import Avatar
 from .context import AppContext
 from .detail import CredentialDetail
 from .editor import CredentialEditor

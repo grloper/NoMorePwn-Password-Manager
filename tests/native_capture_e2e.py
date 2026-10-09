@@ -3,7 +3,15 @@ Only a task-owned fictional vault and isolated per-process socket identity.
 No browser registration, startup changes, provider calls or real credentials.
 """
 from pathlib import Path
-import json, os, struct, subprocess, sys, tempfile, threading, time, uuid
+import json
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
 
 REPO=Path(__file__).resolve().parents[1]
 ROOT=Path(tempfile.mkdtemp(prefix='nomorepwn-native-evidence-'))

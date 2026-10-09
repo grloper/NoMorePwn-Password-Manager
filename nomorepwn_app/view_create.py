@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
 )
 
 from nomorepwn import config, strength, vault
-from nomorepwn.settings import Settings
 
 from . import components, icons, theme, workers
 from .components import StrengthMeter

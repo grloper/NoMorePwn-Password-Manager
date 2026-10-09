@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QVBoxLayout, QWidget,
+    QVBoxLayout,
 )
 
 from nomorepwn.capture import IGNORE as CAPTURE_IGNORE, SAVE as CAPTURE_SAVE

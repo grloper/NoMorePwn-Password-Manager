@@ -185,7 +185,7 @@ class AuditView(QWidget):
                 if (c.get("age_days") or 0) >= config.PASSWORD_AGE_WARN_DAYS:
                     report["stale"].append(c)
                 seen.setdefault(pw, []).append(c)
-            for pw, group in seen.items():
+            for group in seen.values():
                 if len(group) > 1:
                     for c in group:
                         report["reused"].append(c)

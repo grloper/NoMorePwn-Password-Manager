@@ -758,7 +758,6 @@ class CredentialGroupUiTests(unittest.TestCase):
 
     def test_list_renders_group_headers_above_their_items(self):
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QLabel
 
         from nomorepwn_app.view_vault import VaultView, _GroupHeader, _ItemRow
 
@@ -816,7 +815,6 @@ class CredentialGroupUiTests(unittest.TestCase):
 
     def _header(self, view, label):
         from nomorepwn_app.view_vault import _GroupHeader
-        from PySide6.QtWidgets import QLabel
 
         for i in range(view.list.count()):
             w = view.list.itemWidget(view.list.item(i))
@@ -843,7 +841,6 @@ class CredentialGroupUiTests(unittest.TestCase):
         self.assertEqual(len(self._visible_items(view)), 3)
 
     def test_collapsed_group_still_reports_its_true_count(self):
-        from PySide6.QtWidgets import QLabel
 
         view = self._grouped_view()
         self._header(view, "EMAIL").toggled.emit()

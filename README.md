@@ -18,7 +18,7 @@ Windows builds are published on the [Releases page](https://github.com/grloper/N
 - `NoMorePwn-<version>-portable.exe`: single-file portable build.
 - `SHA256SUMS.txt`: SHA-256 checksums of the two `.exe` files.
 
-**Status: pre-release.** Builds are currently produced automatically from `main` and are all marked as GitHub *pre-releases*. They are not reviewed release candidates, and no independent audit has been done. The in-app updater only follows the release GitHub marks as "Latest", which is a manual promotion step; at the time of writing that is an older build than the newest pre-releases.
+**Status: pre-release.** Builds are produced by a manually triggered workflow (which first runs lint and the test suite) and are marked as GitHub *pre-releases*. Earlier pre-releases were published automatically on every push to `main`. They are not reviewed release candidates, and no independent audit has been done. The in-app updater only follows the release GitHub marks as "Latest", which is a manual promotion step; at the time of writing that is an older build than the newest pre-releases.
 
 **The installers are not code-signed.** Windows SmartScreen will likely warn when you run them. Before running a download, compare its hash with `SHA256SUMS.txt`:
 

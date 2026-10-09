@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from nomorepwn import groups, strength, validation, vault
 
-from . import components, dialogs, theme, workers
+from . import components, dialogs, theme
 from .components import StrengthMeter
 from .context import AppContext
 from .generator_widget import GeneratorPanel
@@ -30,7 +30,6 @@ class CredentialEditor(QWidget):
         self._cred_id: int | None = None
         self._original = {}
 
-        p = theme.active()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)

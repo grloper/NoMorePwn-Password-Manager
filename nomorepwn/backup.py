@@ -124,7 +124,7 @@ def write_backup(db_path: str | Path, dest_path: str | Path, key: bytes, *,
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    tmp.write_bytes(blob)
+    db.write_private(tmp, blob)
     tmp.replace(dest)  # atomic on the same volume
     return dest
 
@@ -306,7 +306,7 @@ def restore_to_path(blob: bytes, secret: str, dest_path: str | Path) -> Path:
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".restore-tmp")
-    tmp.write_bytes(vault_bytes)
+    db.write_private(tmp, vault_bytes)
     tmp.replace(dest)
     return dest
 

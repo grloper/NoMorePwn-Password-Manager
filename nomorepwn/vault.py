@@ -152,7 +152,7 @@ def migrate_schema(db_path: str | Path) -> tuple[int, int]:
     backup_path = pre_migration_backup_path(path, current)
     try:
         if not backup_path.exists():
-            backup_path.write_bytes(db.snapshot_bytes(path))
+            db.write_private(backup_path, db.snapshot_bytes(path))
     except OSError as exc:
         raise VaultError(
             f"Could not write the pre-migration backup at {backup_path}: {exc}. "
@@ -347,7 +347,7 @@ class Vault:
         # Snapshot the untouched vault before rewriting a single ciphertext.
         snap_path = pre_rekey_backup_path(self.db_path)
         try:
-            snap_path.write_bytes(db.snapshot_bytes(self.db_path))
+            db.write_private(snap_path, db.snapshot_bytes(self.db_path))
         except OSError as exc:
             raise VaultError(
                 f"Could not write the pre-rekey backup at {snap_path}: {exc}. "

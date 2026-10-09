@@ -20,7 +20,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtWidgets import QApplication, QDialog
 
 from nomorepwn import capture, config, vault
-from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
+from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, Settings
 
 from . import browser_bridge, startup, theme, workers
 from .backup_manager import BackupManager

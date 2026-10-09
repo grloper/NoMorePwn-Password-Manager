@@ -98,7 +98,7 @@ def recover(kit_path: str, db_path: str) -> None:
     unlocked.rekey(new1)
     unlocked.lock()
     snap = vault.pre_rekey_backup_path(db_path)
-    print(f"Vault re-encrypted under the new password. Unlock with it from now on.")
+    print("Vault re-encrypted under the new password. Unlock with it from now on.")
     print(f"A pre-rekey copy (opens with the OLD state) was saved at: {snap}")
 
 

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from nomorepwn import generator, strength
 
-from . import components, icons, theme
+from . import components, theme
 
 
 class _Segmented(QWidget):

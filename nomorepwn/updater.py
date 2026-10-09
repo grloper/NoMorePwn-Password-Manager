@@ -9,8 +9,8 @@ mitigations are deliberate and each exists for a stated reason:
 
 - **HTTPS with certificate verification.** `requests` verifies by default and
   the frozen build bundles certifi. Never pass `verify=False`.
-- **`/releases/latest` excludes pre-releases and drafts.** Every push to main
-  publishes a pre-release; only a release you explicitly promote is ever
+- **`/releases/latest` excludes pre-releases and drafts.** The release workflow
+  publishes only pre-releases; only a release you explicitly promote is ever
   offered to users. This is the entire stable-channel mechanism — do not
   switch to `/releases` and pick `[0]`, which would include pre-releases.
 - **SHA-256 verified before the file is executed — fail closed.** A release

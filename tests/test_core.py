@@ -7,7 +7,6 @@ Run with:  python -m unittest discover tests -v
 from __future__ import annotations
 
 import hashlib
-import os
 import json
 import re
 import sqlite3

@@ -1,0 +1,25 @@
+# Tooling config only; the project is not packaged via pyproject.
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["extension", "build/_work", "dist", ".claude"]
+
+[tool.ruff.lint]
+# Correctness-focused set: pycodestyle errors (E4/E7/E9), pyflakes, bugbear.
+# Style rules (import order, quote style, annotation modernisation) are
+# deliberately not enabled: they would churn the codebase without finding bugs.
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    "B008",  # function calls in defaults: common in Qt code
+    "B904",  # raise-from inside except: noisy, not a correctness issue here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "B011",  # assert False is fine in tests
+    "B017",  # assertRaises(Exception) is used deliberately for crypto failure modes
+    "B023",  # closures created in test loops are invoked within the same iteration
+    "E402",  # e2e scripts adjust sys.path / env before importing the app
+    "E701",  # compact one-line style in the e2e driver scripts
+    "E702",
+]

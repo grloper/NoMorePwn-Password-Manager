@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nomorepwn import backup, db, vault
+from nomorepwn import db, vault
 
 MASTER = "correct horse battery staple 42"
 

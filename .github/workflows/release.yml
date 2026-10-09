@@ -1,29 +1,34 @@
 name: Build & Release
 
-# Every push to main produces a fresh, downloadable Windows build:
-# a portable NoMorePwn.exe and a NoMorePwn-Setup.exe installer, published
-# to a GitHub Release tagged v1.0.<run-number>.
+# Manually triggered (Actions tab -> Run workflow). Builds a portable
+# NoMorePwn.exe and a NoMorePwn-Setup.exe installer and publishes them as a
+# PRE-RELEASE tagged v1.0.<run-number>. It no longer runs on every push to
+# main, and it only builds if the full test workflow (lint + tests) passes.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: tests
     runs-on: windows-latest
+    permissions:
+      contents: write  # needed only to publish the release
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -69,19 +74,19 @@ jobs:
           ls -la release
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: NoMorePwn-${{ steps.version.outputs.version }}
           path: release/*
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: NoMorePwn v${{ steps.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # Every push to main ships as a PRE-RELEASE. The in-app updater reads
+          # Every release from this workflow ships as a PRE-RELEASE. The in-app updater reads
           # /releases/latest, which excludes pre-releases — so installed users
           # are never pulled onto an unreviewed commit. To ship an update,
           # promote a release in the GitHub UI ("Set as the latest release").

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
@@ -11,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from nomorepwn import vault
 
-from . import components, icons, theme
+from . import icons, theme
 from .context import AppContext
 from .view_audit import AuditView
 from .view_generator import GeneratorView
@@ -27,7 +26,6 @@ class AppShell(QWidget):
         super().__init__(parent)
         self._ctx = ctx
         self._vault: vault.Vault | None = None
-        p = theme.active()
 
         from PySide6.QtWidgets import QHBoxLayout
         root = QHBoxLayout(self)

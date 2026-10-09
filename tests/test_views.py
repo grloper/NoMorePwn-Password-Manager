@@ -48,6 +48,34 @@ def setUpModule() -> None:
         _app = QApplication.instance() or QApplication([])
 
 
+def tearDownModule() -> None:
+    """Tear Qt down deterministically so the interpreter does not crash on exit.
+
+    Without this, widgets/timers still alive when the QApplication is destroyed
+    during interpreter shutdown corrupt the heap (exit 139 after a green run).
+    """
+    global _app
+    if not HAS_QT or _app is None:
+        return
+    import gc
+
+    # Every AppController installs an application-wide event filter that
+    # touches its window; detach them before the windows are destroyed.
+    from nomorepwn_app.controller import AppController
+
+    for obj in gc.get_objects():
+        if isinstance(obj, AppController):
+            _app.removeEventFilter(obj)
+
+    for _ in range(3):
+        for widget in QApplication.topLevelWidgets():
+            widget.deleteLater()
+        QApplication.sendPostedEvents(None, 0)  # DeferredDelete
+        QApplication.processEvents()
+        gc.collect()
+    _app = None
+
+
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
 class ViewSmokeTests(unittest.TestCase):
     """Every top-level view must construct against a real unlocked vault."""

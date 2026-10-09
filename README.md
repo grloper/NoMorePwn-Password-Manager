@@ -10,6 +10,24 @@ Organize local credentials into groups, generate passwords, review credential hi
 
 Password and note fields use authenticated AES-GCM encryption. Service names, usernames and group metadata remain plaintext in SQLite. Password derivation uses Argon2id, with a PBKDF2 fallback. These implementation choices have not received an independent security audit.
 
+## Releases and install (Windows)
+
+Windows builds are published on the [Releases page](https://github.com/grloper/NoMorePwn-Password-Manager/releases). Each release has three assets:
+
+- `NoMorePwn-<version>-Setup.exe`: installer (Start-menu shortcut, optional launch at sign-in, uninstaller; no admin rights required).
+- `NoMorePwn-<version>-portable.exe`: single-file portable build.
+- `SHA256SUMS.txt`: SHA-256 checksums of the two `.exe` files.
+
+**Status: pre-release.** Builds are currently produced automatically from `main` and are all marked as GitHub *pre-releases*. They are not reviewed release candidates, and no independent audit has been done. The in-app updater only follows the release GitHub marks as "Latest", which is a manual promotion step; at the time of writing that is an older build than the newest pre-releases.
+
+**The installers are not code-signed.** Windows SmartScreen will likely warn when you run them. Before running a download, compare its hash with `SHA256SUMS.txt`:
+
+```powershell
+Get-FileHash .\NoMorePwn-<version>-Setup.exe -Algorithm SHA256
+```
+
+The checksum file is published in the same release as the binaries, so it detects corrupted downloads but does not protect against a compromised GitHub account or release. macOS and Linux have no packaged builds; run from source (below).
+
 ## Run from source
 
 Use Python 3.10+ in a dedicated virtual environment:
@@ -27,7 +45,7 @@ Install an extension build from `extension/dist/chrome` or `extension/dist/firef
 
 ## Executed evidence
 
-The Windows audit passed 261 Python tests, 73 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled six local login fixtures: success, direct HTTP failure, cross-origin navigation, a redirect ending in HTTP 401, and multi-hop redirects ending at another origin or back at the login form. Its native API was intercepted for this browser test.
+A Windows audit run passed 261 Python tests (the suite has since grown; the current `unittest` suite has 296 tests, 1 skipped on Linux, as run locally), 73 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled six local login fixtures: success, direct HTTP failure, cross-origin navigation, a redirect ending in HTTP 401, and multi-hop redirects ending at another origin or back at the login form. Its native API was intercepted for this browser test.
 
 A separate real native-host child communicated through Qt local IPC with the desktop controller and an encrypted disposable vault. Actual GUI unlock, saves, lock/re-unlock, failed-save acknowledgements and locked-capture rejection were exercised. This is component-chain evidence, not proof of a fully installed browser-to-desktop setup.
 

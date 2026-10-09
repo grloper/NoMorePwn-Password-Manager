@@ -13,8 +13,9 @@ mitigations are deliberate and each exists for a stated reason:
   publishes a pre-release; only a release you explicitly promote is ever
   offered to users. This is the entire stable-channel mechanism — do not
   switch to `/releases` and pick `[0]`, which would include pre-releases.
-- **SHA-256 verified before the file is executed.** Read the honest limits
-  below.
+- **SHA-256 verified before the file is executed — fail closed.** A release
+  with a missing or malformed checksum, or a download that does not match it,
+  is refused and deleted. Read the honest limits below.
 - **Downgrade refused.** A rollback attack cannot walk a user back onto a build
   with a known hole.
 - **Size cap.** A hostile or broken endpoint cannot fill the disk.
@@ -37,6 +38,7 @@ executes anything.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +85,7 @@ class Release:
 
     @property
     def has_checksum(self) -> bool:
-        return bool(self.sha256)
+        return bool(self.sha256) and re.fullmatch(r"[0-9a-fA-F]{64}", self.sha256) is not None
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -165,7 +167,7 @@ def fetch_latest(owner: str, repo: str, timeout: int = DEFAULT_TIMEOUT,
             sums.raise_for_status()
             sha256 = _parse_checksums(sums.text).get(installer["name"])
         except (requests.RequestException, ValueError):
-            sha256 = None  # surfaced to the user as "unverified"
+            sha256 = None  # download() refuses to install a release without a checksum
 
     tag = str(payload.get("tag_name") or "")
     return Release(
@@ -196,6 +198,15 @@ def download(release: Release, dest_dir: Path,
     removed and UpdateError is raised. A file that failed verification must
     never be left on disk where something else could execute it.
     """
+    # Fail closed: never download, let alone hand over for execution, an
+    # installer we cannot verify.
+    if not release.has_checksum:
+        raise UpdateError(
+            "This release has no usable SHA-256 checksum for its installer, so "
+            "it will not be installed. Download it manually from the release page "
+            "if you trust it.")
+    expected = release.sha256.lower()
+
     get = (session or requests).get
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -220,7 +231,7 @@ def download(release: Release, dest_dir: Path,
                     if on_progress:
                         on_progress(written, release.asset_size)
 
-        if release.sha256 and digest.hexdigest() != release.sha256:
+        if not hmac.compare_digest(digest.hexdigest(), expected):
             raise UpdateError(
                 "Downloaded installer failed its checksum — discarded. "
                 "This can mean a corrupted download or a tampered file.")

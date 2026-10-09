@@ -1391,8 +1391,52 @@ class UpdateCheckTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).glob("*")), [],
                              "unverified installer was left on disk")
 
+    def test_missing_checksum_refuses_install_without_downloading(self):
+        for bad in (None, "", "abc", "z" * 64, "a" * 63):
+            rel = self._release(bad)
+            self.assertFalse(rel.has_checksum)
+
+            class _NoNetwork:
+                def get(self, *a, **kw):
+                    raise AssertionError("must not download an unverifiable installer")
+
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(updater.UpdateError):
+                    updater.download(rel, Path(tmp), session=_NoNetwork())
+                self.assertEqual(list(Path(tmp).glob("*")), [])
+
+    def test_release_without_checksum_asset_cannot_be_installed(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload(assets=[
+                {"name": self.INSTALLER, "size": 4,
+                 "browser_download_url": "https://example.invalid/setup.exe"}])),
+        })
+        rel = updater.fetch_latest("o", "r", session=session)
+        self.assertFalse(rel.has_checksum)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+
+    def test_checksum_fetch_error_cannot_be_installed(self):
+        session = self._session({
+            "releases/latest": self._Resp(payload=self._release_payload()),
+            "sums": self._Resp(status=500),
+        })
+        rel = updater.fetch_latest("o", "r", session=session)
+        self.assertIsNone(rel.sha256)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(updater.UpdateError):
+                updater.download(rel, Path(tmp), session=session)
+
+    def test_checksum_comparison_is_case_insensitive(self):
+        body = b"data"
+        rel = self._release(hashlib.sha256(body).hexdigest().upper())
+        session = self._session({"setup.exe": self._Resp(chunks=[body])})
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(updater.download(rel, Path(tmp), session=session).exists())
+
     def test_oversized_download_is_aborted_and_removed(self):
-        rel = self._release(None)
+        rel = self._release(hashlib.sha256(b"x").hexdigest())
         chunk = b"x" * (1024 * 1024)
         huge = [chunk] * (updater.MAX_DOWNLOAD_BYTES // len(chunk) + 2)
         session = self._session({"setup.exe": self._Resp(chunks=huge)})
@@ -1402,7 +1446,7 @@ class UpdateCheckTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).glob("*")), [])
 
     def test_empty_download_is_rejected(self):
-        rel = self._release(None)
+        rel = self._release(hashlib.sha256(b"x").hexdigest())
         session = self._session({"setup.exe": self._Resp(chunks=[])})
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(updater.UpdateError):
@@ -1411,7 +1455,7 @@ class UpdateCheckTests(unittest.TestCase):
     def test_network_failure_mid_download_leaves_nothing_behind(self):
         import requests
 
-        rel = self._release(None)
+        rel = self._release(hashlib.sha256(b"x").hexdigest())
 
         class _Broken(self._Resp):
             def iter_content(self, chunk_size=0):

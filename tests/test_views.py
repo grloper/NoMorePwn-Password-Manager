@@ -1384,6 +1384,8 @@ class CaptureFlowTests(unittest.TestCase):
     def _ipc(self, **msg) -> dict:
         import json
         msg["type"] = "save-credential"
+        from nomorepwn import ipc_auth
+        msg["token"] = ipc_auth.load_or_create_token()
         return json.loads(self.ctrl.handle_ipc_message(json.dumps(msg).encode()).decode())
 
     def _count(self) -> int:

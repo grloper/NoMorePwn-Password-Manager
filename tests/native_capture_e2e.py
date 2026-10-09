@@ -34,7 +34,8 @@ for font_name in ('segoeui.ttf','segoeuib.ttf','consola.ttf'):
     font=Path(os.environ.get('WINDIR',''))/'Fonts'/font_name
     if font.exists():QFontDatabase.addApplicationFont(str(font))
 ctrl=AppController(app)
-server=QLocalServer();assert server.listen('NoMorePwn-instance-'+identity)
+from nomorepwn import ipc_auth;ipc_auth.load_or_create_token()
+server=QLocalServer();server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption);assert server.listen('NoMorePwn-instance-'+identity)
 connections=[]
 def accept():
     conn=server.nextPendingConnection();connections.append(conn)

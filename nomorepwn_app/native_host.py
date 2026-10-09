@@ -148,7 +148,12 @@ def _handle(message: dict) -> dict:
             if not sock.waitForConnected(1000):
                 return {"type": "error", "code": "app-not-reachable", "message": "NoMorePwn is not running."}
                 
-            payload = json.dumps(message).encode("utf-8")
+            from nomorepwn import ipc_auth
+
+            token = ipc_auth.read_token()
+            if token is None:
+                return {"type": "error", "code": "ipc-no-token", "message": "NoMorePwn has not been started yet."}
+            payload = json.dumps({**message, "token": token}).encode("utf-8")
             sock.write(payload)
             sock.flush()
             # flush() can synchronously drain the queue on Unix. Waiting for a

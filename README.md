@@ -28,6 +28,8 @@ Get-FileHash .\NoMorePwn-<version>-Setup.exe -Algorithm SHA256
 
 The checksum file is published in the same release as the binaries, so it detects corrupted downloads but does not protect against a compromised GitHub account or release. macOS and Linux have no packaged builds; run from source (below).
 
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the app does and does not defend against.
+
 ## Run from source
 
 Use Python 3.10+ in a dedicated virtual environment:

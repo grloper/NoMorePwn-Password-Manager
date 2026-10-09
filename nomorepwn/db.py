@@ -16,7 +16,10 @@ to construct SQL at all.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -58,9 +61,47 @@ CREATE INDEX IF NOT EXISTS idx_history_credential
 """
 
 
+def secure_file(path: str | Path) -> None:
+    """Make the database file owner-only (0600), creating it empty if absent.
+
+    Creating the file ourselves with 0600 (rather than letting SQLite create it
+    with the process umask, typically 0644) means the vault is never
+    group/world-readable, even briefly. An existing file with looser
+    permissions is tightened. POSIX only: on Windows modes are not enforced and
+    protection comes from the per-user %APPDATA% directory ACL.
+    """
+    if sys.platform == "win32":
+        return
+    p = str(path)
+    try:
+        if not os.path.exists(p):
+            os.close(os.open(p, os.O_WRONLY | os.O_CREAT, 0o600))
+        else:
+            # Only tighten files we own and that are regular files (not symlinks
+            # to somewhere else); anything else is left alone.
+            st = os.lstat(p)
+            if stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() \
+                    and (st.st_mode & 0o077):
+                os.chmod(p, 0o600)
+    except OSError:
+        pass  # best effort: read-only or foreign filesystem
+
+
+def write_private(path: str | Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` as an owner-only file (0600 on POSIX)."""
+    secure_file(path)
+    if sys.platform != "win32":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    Path(path).write_bytes(data)
+
+
 @contextmanager
 def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     """Short-lived connection with safe defaults; commits on success."""
+    secure_file(db_path)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

@@ -207,6 +207,7 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   Launching a freshly built .exe while any NoMorePwn is running exits immediately with **no error
   and no output** — it looks exactly like a crash. Check `Get-Process NoMorePwn` before concluding
   a build is broken.
+- **`VERSION` (repo root) is the single source of truth** for the release version. After editing it run `python scripts/sync_version.py` then `python extension/build.py`; `tests/test_version.py` fails if any copy (nomorepwn/__init__.py, extension manifest/package/lock/dist, installer.iss default) drifts. `release.yml` reads it, refuses an existing tag, and the spec bakes it (env `NOMOREPWN_VERSION` may override). Bumping `VERSION` is the only step to cut a version; tagging/publishing stays a manual workflow run.
 - **The version is baked at build time** into `nomorepwn_app/_build_info.py` by the spec, and that
   file is gitignored. Never reintroduce `os.environ.get("NOMOREPWN_VERSION")` at module scope: it
   evaluates on the *user's* machine where the variable is unset, which is why every release

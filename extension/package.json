@@ -1,6 +1,6 @@
 {
   "name": "nomorepwn-extension",
-  "version": "0.1.0",
+  "version": "1.0.27",
   "private": true,
   "description": "NoMorePwn browser extension — verified login capture.",
   "type": "module",

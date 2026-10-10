@@ -2,7 +2,7 @@ name: Build & Release
 
 # Manually triggered (Actions tab -> Run workflow). Builds a portable
 # NoMorePwn.exe and a NoMorePwn-Setup.exe installer and publishes them as a
-# PRE-RELEASE tagged v1.0.<run-number>. It no longer runs on every push to
+# PRE-RELEASE tagged v<VERSION file>. It no longer runs on every push to
 # main, and it only builds if the full test workflow (lint + tests) passes.
 on:
   workflow_dispatch:
@@ -35,7 +35,14 @@ jobs:
       - name: Compute version
         id: version
         shell: bash
-        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+        run: |
+          # Single source of truth: the VERSION file (bump it in a PR). Refuse to re-release a version.
+          v="$(tr -d '[:space:]' < VERSION)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad VERSION: $v"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "tag v$v already exists; bump VERSION first"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: |

@@ -57,7 +57,20 @@ try:
             sw=context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
             extension_id=sw.url.split('/')[2]
             assert extension_id=='cjgphedkabfdfbhkfleagmanmmhlolkl',extension_id
-            time.sleep(.5)
+            # On slow runners (windows-latest CI) Playwright can attach to the worker before Chromium has
+            # bound the extension APIs: chrome has only loadTimes/csi and chrome.runtime is undefined.
+            # Wait for the real API instead of sleeping a fixed time; never proceed (or stub) without it.
+            deadline=time.monotonic()+30
+            while True:
+                try:
+                    if sw.evaluate("() => typeof chrome!=='undefined' && !!chrome.runtime && typeof chrome.runtime.sendNativeMessage==='function'"):break
+                except Exception:
+                    # worker may have been replaced while starting; follow the newest extension worker
+                    live=[w for w in context.service_workers if w.url.startswith('chrome-extension://'+extension_id)]
+                    if live:sw=live[-1]
+                if time.monotonic()>deadline:
+                    raise SystemExit('extension service worker never exposed chrome.runtime.sendNativeMessage (30s)')
+                time.sleep(.1)
             print('Worker capabilities:',sw.evaluate('() => ({url:location.href,chrome:Object.keys(globalThis.chrome||{})})'))
             sw.evaluate('''() => { globalThis.auditNative=[]; chrome.runtime.sendNativeMessage=(host,message,callback)=>{
                 auditNative.push({host,verified:message.verified===true,unverified:message.unverified===true,targetOrigin:new URL(message.targetUrl).origin});

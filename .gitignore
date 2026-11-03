@@ -40,3 +40,5 @@ package-lock.json
 # The extension's signing key. The PUBLIC half lives in manifest.json ("key")
 # and pins the extension ID; this private half is only needed to pack a .crx.
 extension/.keys/
+
+build/NoMorePwn/

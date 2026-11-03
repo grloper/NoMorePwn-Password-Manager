@@ -1,4 +1,4 @@
-"""Reusable password / passphrase generator panel.
+﻿"""Reusable password / passphrase generator panel.
 
 Used both on the standalone Generator page and inline in the credential
 editor. All randomness comes from :mod:`nomorepwn.generator` (CSPRNG).
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from nomorepwn import generator, strength
 
 from . import components, theme
+from .util import secret_mime_data
 
 
 class _Segmented(QWidget):
@@ -204,7 +205,7 @@ class GeneratorPanel(QWidget):
         if self._ctx is not None:
             self._ctx.copy_secret(secret, "Password copied")
         else:
-            QGuiApplication.clipboard().setText(secret)
+            QGuiApplication.clipboard().setMimeData(secret_mime_data(secret))
         self.copied.emit(secret)
 
     def _on_mode(self, idx: int) -> None:
@@ -243,8 +244,9 @@ class GeneratorPanel(QWidget):
         self.output.setText(secret)
         self.output.setCursorPosition(0)  # show the start, not the tail, for long values
         result = strength.evaluate(secret)
-        self.meter.set_result(result.score, f"{result.label} · estimate: {result.crack_time_display}")
+        self.meter.set_result(result.score, f"{result.label} Â· estimate: {result.crack_time_display}")
         self.generated.emit(secret)
 
     def value(self) -> str:
         return self.output.text()
+

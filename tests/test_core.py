@@ -21,7 +21,6 @@ from nomorepwn import (
     backup, breachcatalog, crypto, generator, groups, leakcheck, recovery,
     strength, updater, validation, vault,
 )
-from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
 from nomorepwn import db
 

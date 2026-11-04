@@ -1,5 +1,4 @@
 """Synthetic vault adversarial lifecycle tests; no live profile access."""
-import json
 import tempfile
 import threading
 import unittest

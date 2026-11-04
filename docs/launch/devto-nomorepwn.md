@@ -6,15 +6,15 @@ tags: python, security, opensource, qt
 cover_image: https://raw.githubusercontent.com/grloper/NoMorePwn-Password-Manager/main/docs/media/banner.png
 ---
 
-> ⭐ **GitHub: [github.com/grloper/NoMorePwn-Password-Manager](https://github.com/grloper/NoMorePwn-Password-Manager)** · source available (no license file yet) · by [@grloper](https://github.com/grloper)
+> ⭐ **GitHub: [github.com/grloper/NoMorePwn-Password-Manager](https://github.com/grloper/NoMorePwn-Password-Manager)** · open source (MIT) · by [@grloper](https://github.com/grloper)
 
 {% github grloper/NoMorePwn-Password-Manager %}
 
-![NoMorePwn banner: shield logo, tagline "A local password vault you can read, review and try to break", chips for Python and PySide6, AES-256-GCM and Argon2id, pre-release, no independent audit, source available](https://raw.githubusercontent.com/grloper/NoMorePwn-Password-Manager/main/docs/media/banner.png)
+![NoMorePwn banner: shield logo, tagline "A local password vault you can read, review and try to break", chips for Python and PySide6, AES-256-GCM and Argon2id, pre-release, no independent audit, open source (MIT)](https://raw.githubusercontent.com/grloper/NoMorePwn-Password-Manager/main/docs/media/banner.png)
 
 I wanted to understand password managers by building one. NoMorePwn is the result: a local desktop vault in Python that I am publishing so people can read it, review it and try to break it. I want to be upfront about what it is. It is a pre-release from one maintainer, it has had no independent security audit, and I do not recommend putting real credentials in it yet. If you are looking for a daily driver, use a mature, audited manager. If you want to read, review or break a small one, this is for you.
 
-One licensing note: the repository does not have a LICENSE file yet, so I am calling it source available, not open source. You can read it, but you do not yet have an explicit grant to reuse it.
+One licensing note: the repository is released under the MIT License, so you can read, reuse and modify it under the terms of the LICENSE file.
 
 ![NoMorePwn demo: unlock screen, typing a master password, vault list with three items, security dashboard, password generator](https://raw.githubusercontent.com/grloper/NoMorePwn-Password-Manager/main/docs/media/demo.gif)
 

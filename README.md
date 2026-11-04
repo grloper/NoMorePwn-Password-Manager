@@ -12,6 +12,8 @@ Password and note fields use authenticated AES-GCM encryption. Service names, us
 
 ## Releases and install (Windows)
 
+**Download the latest pre-release, [v1.0.27](https://github.com/grloper/NoMorePwn-Password-Manager/releases/tag/v1.0.27):** [Setup.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-Setup.exe) · [portable.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-portable.exe) · [SHA256SUMS.txt](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/SHA256SUMS.txt)
+
 Windows builds are published on the [Releases page](https://github.com/grloper/NoMorePwn-Password-Manager/releases). Each release has three assets:
 
 - `NoMorePwn-<version>-Setup.exe`: installer (Start-menu shortcut, optional launch at sign-in, uninstaller; no admin rights required).

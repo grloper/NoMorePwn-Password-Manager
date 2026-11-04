@@ -12,7 +12,7 @@ Password and note fields use authenticated AES-GCM encryption. Service names, us
 
 ## Releases and install (Windows)
 
-**Download the latest pre-release, [v1.0.27](https://github.com/grloper/NoMorePwn-Password-Manager/releases/tag/v1.0.27):** [Setup.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-Setup.exe) · [portable.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-portable.exe) · [SHA256SUMS.txt](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/SHA256SUMS.txt)
+**Download the latest release, [v1.0.27](https://github.com/grloper/NoMorePwn-Password-Manager/releases/tag/v1.0.27):** [Setup.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-Setup.exe) · [portable.exe](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/NoMorePwn-1.0.27-portable.exe) · [SHA256SUMS.txt](https://github.com/grloper/NoMorePwn-Password-Manager/releases/download/v1.0.27/SHA256SUMS.txt)
 
 Windows builds are published on the [Releases page](https://github.com/grloper/NoMorePwn-Password-Manager/releases). Each release has three assets:
 
@@ -20,7 +20,7 @@ Windows builds are published on the [Releases page](https://github.com/grloper/N
 - `NoMorePwn-<version>-portable.exe`: single-file portable build.
 - `SHA256SUMS.txt`: SHA-256 checksums of the two `.exe` files.
 
-**Status: pre-release.** Builds are produced by a manually triggered workflow (which first runs lint and the test suite) and are marked as GitHub *pre-releases*. Earlier pre-releases were published automatically on every push to `main`. They are not reviewed release candidates, and no independent audit has been done. The in-app updater only follows the release GitHub marks as "Latest", which is a manual promotion step; at the time of writing that is an older build than the newest pre-releases.
+**Status: release.** Builds are produced by a manually triggered workflow (which first runs lint and the test suite) Earlier pre-releases were published automatically on every push to `main`. They are not reviewed release candidates, and no independent audit has been done. The in-app updater only follows the release GitHub marks as "Latest", which is a manual promotion step.
 
 **The installers are not code-signed.** Windows SmartScreen will likely warn when you run them. Before running a download, compare its hash with `SHA256SUMS.txt`:
 

@@ -25,27 +25,8 @@ one native desktop app, zero required network access.
    OS. See §10 for what its integrity check does and does not guarantee.
    Master-key recovery (§11), including its optional TOTP second factor
    (`pyotp`, RFC 6238), is entirely offline and adds **no** third path — the
-   enumeration above stays at two.
-
-   The browser extension under `extension/` is a separate component with its
-   own network posture — it observes response headers on sites the user
-   visits and never transmits vault data. It reaches this app only through a
-   local native-messaging pipe, never a socket. The shipped extension makes no
-   `fetch`/XHR/WebSocket calls of its own; it sends a *verdict*, plus once a
-   captured credential, over Chrome's local IPC.
-
-   The honest caveat is the browser surface, not the wire. The extension holds
-   `<all_urls>` host access and reads login-form fields to do its job, so a
-   compromised extension *build* (a malicious update or supply-chain swap) could
-   exfiltrate a captured credential in the browser **before** it ever reaches
-   this app — as could ordinary cross-site scripting on the login page itself,
-   which reads the form field before any extension or the app is involved. That
-   is a browser-integration attack surface, inherent to capturing logins in a
-   browser at all; it is **not** the desktop app reaching the network. The two
-   paths enumerated above are the desktop app's complete network footprint, and
-   neither carries vault data. The extension's own mitigations are the pinned
-   extension ID (§ `browser_bridge`) and Chrome Web Store review — not a
-   promise that a browser add-on can never be turned against you.
+   enumeration above stays at two. There is no browser extension or
+   native-messaging host; credentials enter the vault only through the desktop UI.
 
 ## 2. Component map
 
@@ -94,7 +75,7 @@ master password ──Argon2id(salt)──▶ 256-bit key (RAM only)
         write path: plaintext ──AES-256-GCM(key, nonce, AAD)──▶ blob → SQLite
         read  path: blob ──GCM verify+decrypt──▶ plaintext (on Reveal only)
                                         │
-        Lock / browser refresh ──▶ key dropped from session memory
+        Lock ──▶ key dropped from session memory
 ```
 * Every encryption uses a **fresh random 96-bit nonce**, stored as the
   blob prefix (`nonce ‖ ciphertext ‖ tag`). Nonces are never reused.

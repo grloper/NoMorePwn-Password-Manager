@@ -18,4 +18,4 @@ Rules for AI agents and humans:
 3. **Report only what was run.** State the exact command and its real result. If something was not run or could not run, say so. Never claim success without the output.
 4. Do not edit `.github/`, `scripts/verify.sh`, or `scripts/check-test-integrity.sh` to make a failing check pass; those are owned by @grloper (CODEOWNERS).
 
-Not checked by `scripts/verify.sh`: the Playwright browser/native e2e tests (run by `test.yml`), Windows-only behaviour, the PyInstaller/Inno release build, the real GUI. `verify.sh` sets `NOMOREPWN_DATA` to a temp dir so it never touches a real vault.
+Not checked by `scripts/verify.sh`: Windows-only behaviour, the PyInstaller/Inno release build, the real GUI. `verify.sh` sets `NOMOREPWN_DATA` to a temp dir so it never touches a real vault.

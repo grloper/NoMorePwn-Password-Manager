@@ -1,30 +1,28 @@
 """Settings page.
 
 A category sidebar on the left switches between focused panels on the right —
-Security, General, Backups, Recovery, Browser extension, Updates, About — so
-each screen shows only the handful of controls it owns instead of one long,
-undifferentiated scroll.
+Security, General, Backups, Recovery, Updates, About — so each screen shows
+only the handful of controls it owns instead of one long, undifferentiated
+scroll.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QSize, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QScrollArea, QStackedWidget, QVBoxLayout,
     QWidget,
 )
 
 from nomorepwn import config, vault
 from nomorepwn.settings import (
-    CAPTURE_DISABLED, CAPTURE_PROMPT, CAPTURE_SILENT,
     CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY,
 )
 
-from . import __version__, browser_bridge, components, icons, is_packaged_build, theme
+from . import __version__, components, icons, is_packaged_build, theme
 from .components import Card
 from .context import AppContext
 from .dialogs import ask_new_passphrase, confirm
@@ -81,7 +79,6 @@ class SettingsView(QWidget):
             ("settings", "General", self._build_general_page),
             ("download", "Backups", self._build_backups_page),
             ("key", "Recovery", self._build_recovery_page),
-            ("globe", "Browser extension", self._build_extension_page),
             ("refresh", "Updates", self._build_updates_page),
             ("info", "About", self._build_about_page),
         ]
@@ -105,10 +102,6 @@ class SettingsView(QWidget):
         self.backup_enabled.toggled.connect(self._save)
         self.backup_keep.currentIndexChanged.connect(self._save)
         self.updates_enabled.toggled.connect(self._save)
-        self.capture_action.currentIndexChanged.connect(self._save)
-        # The browser picker only changes what folder/steps we show — never a
-        # persisted setting, so it refreshes the panel instead of saving.
-        self.ext_browser.currentIndexChanged.connect(self._refresh_extension_info)
 
     # -- page scaffolding ----------------------------------------------
 
@@ -276,78 +269,6 @@ class SettingsView(QWidget):
         lay.addStretch(1)
         return body
 
-    # -- Browser extension ---------------------------------------------
-
-    def _build_extension_page(self) -> QWidget:
-        body, lay = self._page(
-            "Browser extension",
-            "Save logins straight from your browser. NoMorePwn only offers to save "
-            "a password once it has confirmed the login actually worked, so you "
-            "never store the typo you just fixed. It talks to this app directly on "
-            "your machine — nothing is sent anywhere.")
-
-        status_card = Card()
-        self.ext_status = QLabel("")
-        self.ext_status.setWordWrap(True)
-        status_card.add(self.ext_status)
-        lay.addWidget(status_card)
-
-        cap_card = Card()
-        cap_card.add(components.heading("Capture behaviour", "H3"))
-        self.capture_action = QComboBox()
-        self.capture_action.addItem("Save silently to Captured Logins", CAPTURE_SILENT)
-        self.capture_action.addItem("Prompt me to review in the app", CAPTURE_PROMPT)
-        self.capture_action.addItem("Ignore completely", CAPTURE_DISABLED)
-        cap_card.add(_Setting(
-            "When a login is captured",
-            "How NoMorePwn handles credentials sent from your browser.",
-            self.capture_action))
-        lay.addWidget(cap_card)
-
-        inst_card = Card()
-        inst_card.add(components.heading("Install in your browser", "H3"))
-        inst_card.add(components.muted(
-            "Choose a browser and NoMorePwn will register the local connection, "
-            "open that browser's extensions page, and open the folder to load. The "
-            "final “Load unpacked” click is yours — browsers don't let an app "
-            "install an unpacked extension silently."))
-
-        self.ext_browser = QComboBox()
-        self._populate_browser_choices()
-        inst_card.add(_Setting(
-            "Browser",
-            "Chrome, Edge and Brave share one build; Firefox uses its own.",
-            self.ext_browser))
-
-        self.ext_setup_btn = components.primary_button("Auto-install on browser", "download")
-        self.ext_setup_btn.clicked.connect(self._auto_install_extension)
-        setup_row = QHBoxLayout()
-        setup_row.addWidget(self.ext_setup_btn)
-        setup_row.addStretch(1)
-        inst_card.body.addLayout(setup_row)
-
-        self.ext_steps = QLabel("")
-        self.ext_steps.setObjectName("Faint")
-        self.ext_steps.setWordWrap(True)
-        self.ext_steps.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        inst_card.add(self.ext_steps)
-
-        ext_actions = QHBoxLayout()
-        self.ext_folder_btn = components.button("Open folder", "external")
-        self.ext_folder_btn.clicked.connect(self._open_extension_folder)
-        self.ext_copy_btn = components.button("Copy path", "copy")
-        self.ext_copy_btn.clicked.connect(self._copy_extension_path)
-        self.ext_remove_btn = components.button("Disconnect", "x")
-        self.ext_remove_btn.clicked.connect(self._remove_extension)
-        ext_actions.addWidget(self.ext_folder_btn)
-        ext_actions.addWidget(self.ext_copy_btn)
-        ext_actions.addWidget(self.ext_remove_btn)
-        ext_actions.addStretch(1)
-        inst_card.body.addLayout(ext_actions)
-        lay.addWidget(inst_card)
-        lay.addStretch(1)
-        return body
-
     # -- Updates -------------------------------------------------------
 
     def _build_updates_page(self) -> QWidget:
@@ -413,10 +334,8 @@ class SettingsView(QWidget):
         self.backup_enabled.setChecked(s.backup_enabled)
         self.backup_keep.setCurrentIndex(max(0, self.backup_keep.findData(s.backup_keep)))
         self.updates_enabled.setChecked(s.updates_enabled)
-        self.capture_action.setCurrentIndex(max(0, self.capture_action.findData(s.capture_action)))
         self._loading = False
         self._refresh_backup_info()
-        self._refresh_extension_info()
         self._refresh_update_info()
 
     def _save(self) -> None:
@@ -434,7 +353,6 @@ class SettingsView(QWidget):
         s.backup_enabled = self.backup_enabled.isChecked()
         s.backup_keep = self.backup_keep.currentData()
         s.updates_enabled = self.updates_enabled.isChecked()
-        s.capture_action = self.capture_action.currentData()
         s.save()
         # Must stay last: _on_change() can rebuild/destroy this very view.
         self._on_change()
@@ -581,144 +499,3 @@ class SettingsView(QWidget):
             return
         from .recovery_dialog import RecoveryKitDialog
         RecoveryKitDialog(self, self._ctx.get_vault, self._ctx).exec()
-
-    # -- browser extension ----------------------------------------------
-
-    def _populate_browser_choices(self) -> None:
-        """Fill the browser picker: detected browsers first, else all supported.
-
-        The user's default browser is preselected and labelled, so the common
-        "just set it up" path is one click with nothing to choose.
-        """
-        self.ext_browser.blockSignals(True)
-        self.ext_browser.clear()
-        installed = browser_bridge.installed_browsers()
-        default = browser_bridge.default_browser()
-        names = installed or list(browser_bridge.BROWSERS)
-        for name in names:
-            suffix = ""
-            if name == default:
-                suffix = "  (default)"
-            elif name in installed:
-                suffix = "  (installed)"
-            self.ext_browser.addItem(name + suffix, name)
-        if default:
-            idx = self.ext_browser.findData(default)
-            if idx >= 0:
-                self.ext_browser.setCurrentIndex(idx)
-        self.ext_browser.blockSignals(False)
-
-    def _selected_browser(self) -> str:
-        return self.ext_browser.currentData() or "Chrome"
-
-    def _refresh_extension_info(self) -> None:
-        p = theme.active()
-        st = browser_bridge.status()
-        browser = self._selected_browser()
-        folder = st.folder_for(browser)
-        missing = st.files_missing
-
-        if missing:
-            self.ext_status.setText("⚠  The browser extension is missing from this install.")
-            self.ext_status.setStyleSheet(f"color:{p.danger};")
-        elif st.is_registered:
-            self.ext_status.setText(f"✓  Connected to {', '.join(st.registered)}")
-            self.ext_status.setStyleSheet(f"color:{p.success}; font-weight:600;")
-        elif not st.supported:
-            self.ext_status.setText(
-                "Ready to load. Automatic registration is Windows-only for now — "
-                "the folder and steps below still apply.")
-            self.ext_status.setStyleSheet(f"color:{p.text_muted};")
-        else:
-            self.ext_status.setText("Not connected yet — use “Auto-install on browser” below.")
-            self.ext_status.setStyleSheet(f"color:{p.text_muted};")
-
-        self.ext_setup_btn.setEnabled(not missing)
-        self.ext_browser.setEnabled(not missing)
-        self.ext_folder_btn.setEnabled(not missing and folder.exists())
-        self.ext_copy_btn.setEnabled(not missing)
-        self.ext_remove_btn.setEnabled(st.is_registered)
-
-        # Loading unpacked is a browser-side action we can't perform for the
-        # user, so spell it out — naming the exact per-browser folder.
-        if missing:
-            self.ext_steps.setText("")
-            return
-        page_url = browser_bridge.extensions_page(browser)
-        if browser == "Firefox":
-            self.ext_steps.setText(
-                f"To temporarily load in Firefox:\n"
-                f"1.  Open  {page_url}\n"
-                f"2.  Click “Load Temporary Add-on”.\n"
-                f"3.  Choose the manifest file:\n"
-                f"      {folder / 'manifest.json'}\n"
-                f"Firefox removes temporary add-ons when it restarts.")
-            return
-        self.ext_steps.setText(
-            f"To finish loading in {browser}:\n"
-            f"1.  Open  {page_url}\n"
-            f"2.  Turn on Developer mode\n"
-            f"3.  Click “Load unpacked” and choose this folder:\n"
-            f"      {folder}")
-
-    def _auto_install_extension(self) -> None:
-        browser = self._selected_browser()
-        outcome = browser_bridge.auto_install(browser)
-
-        # Opening the folder + copying its path is cross-platform and makes the
-        # one remaining manual step trivial.
-        if outcome.folder.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(outcome.folder)))
-            QApplication.clipboard().setText(str(outcome.folder))
-
-        self._refresh_extension_info()
-
-        page_url = browser_bridge.extensions_page(browser)
-        if not outcome.files_ready:
-            self._ctx.toast.show(
-                "The bundled extension files are missing from this install.", "error", 4000)
-            return
-        if not outcome.supported:
-            self._ctx.toast.show(
-                f"Opened the {browser} folder and copied its path. Automatic "
-                f"registration is Windows-only; load it from {page_url}.", "info", 5000)
-            return
-        if not outcome.registered:
-            # Registration is the part we own on this platform — don't hide a
-            # failure behind a cheerful "opened the folder" message.
-            self._ctx.toast.show(
-                f"Opened the {browser} folder and copied its path, but couldn't "
-                f"register the connection. Load it from {page_url} and try "
-                f"Auto-install again.", "error", 6000)
-            return
-
-        steps = ["registered the connection"]
-        if outcome.page_opened:
-            steps.append(f"opened {browser}")
-        steps.append("opened the folder & copied its path")
-        load_action = "Load Temporary Add-on" if browser == "Firefox" else "Load unpacked"
-        self._ctx.toast.show(
-            f"NoMorePwn {', '.join(steps)}. Click “{load_action}” to finish.",
-            "success", 5000)
-
-    def _remove_extension(self) -> None:
-        if not confirm(self, "Disconnect the browser extension?",
-                       "The extension will no longer be able to reach your vault. "
-                       "It stays installed in your browser until you remove it there.",
-                       confirm_text="Disconnect", danger=True):
-            return
-        browser_bridge.unregister()
-        self._refresh_extension_info()
-        self._ctx.toast.show("Browser extension disconnected", "success")
-
-    def _open_extension_folder(self) -> None:
-        path = browser_bridge.extension_dir(self._selected_browser())
-        if not path.exists():
-            self._ctx.toast.show("Extension folder is missing.", "error")
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-
-    def _copy_extension_path(self) -> None:
-        QApplication.clipboard().setText(
-            str(browser_bridge.extension_dir(self._selected_browser())))
-        self._ctx.toast.show("Folder path copied", "success")

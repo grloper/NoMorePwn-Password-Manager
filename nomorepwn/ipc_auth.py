@@ -1,9 +1,9 @@
 """Per-install shared secret authenticating local IPC messages.
 
-The desktop app listens on a local socket; the native-messaging host (and a
-second launch of the app) connect to it. Every message must carry the token
-stored here, in a file only the current user can read (POSIX mode 0600; on
-Windows the file lives in the per-user %APPDATA% directory and inherits its
+The desktop app listens on a local socket; a second launch of the app connects
+to it to ask the running instance to show itself. Every message must carry the
+token stored here, in a file only the current user can read (POSIX mode 0600;
+on Windows the file lives in the per-user %APPDATA% directory and inherits its
 ACL, since POSIX modes are not enforceable there).
 """
 

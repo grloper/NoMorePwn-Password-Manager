@@ -1,8 +1,8 @@
 # NoMorePwn
 
 Offline Windows password manager: a PySide6 desktop app over an AES-256-GCM/SQLite vault
-(`nomorepwn/`), plus an MV3 browser extension that captures credentials only after verifying a
-login succeeded, bridged by a native-messaging host.
+(`nomorepwn/`). Credentials enter only through the desktop UI — there is no browser extension
+or native-messaging host.
 
 **Threat model:** an attacker with read *and write* access to `vault.db` or a `.nmpbak`, and
 anyone who obtains a backup from cloud storage. Out of scope: memory dumps of the live process,
@@ -26,7 +26,7 @@ installer download). Adding a third is a threat-model change — update `README.
 - `python NoMorePwn.py` opens the real vault and blocks on a GUI.
 - To isolate, set `NOMOREPWN_DATA` **before the process imports `nomorepwn.config`** — it is read
   once at import (`config.py:40`). Setting it afterwards silently does nothing and you operate on
-  live data. In-process, patch `config.DB_PATH` directly (see `tests/test_core.py` `NativeHostTests`).
+  live data. In-process, patch `config.DB_PATH` directly (see vault tests in `tests/test_core.py`).
 
 ## Shell
 
@@ -37,8 +37,8 @@ available separately and does take POSIX syntax.
 ## Commands
 
 ```
-python -m unittest discover tests -v      # 196 tests, ~9s — from repo root
-cd extension; npm install; npm test       # 52 checks, ~22s — NOT `npm ci` (lockfile gitignored)
+python -m unittest discover tests -v      # from repo root
+scripts/verify.sh                         # ruff + unittest (sets NOMOREPWN_DATA)
 python NoMorePwn.py                       # runs against the REAL vault (see above)
 pip install -r requirements-build.txt     # covers both test and build deps
 pyinstaller build/NoMorePwn.spec --distpath dist --workpath build/_work --noconfirm
@@ -51,7 +51,7 @@ pyinstaller build/NoMorePwn.spec --distpath dist --workpath build/_work --noconf
 **CI reality:** `release.yml` runs `python -m unittest discover tests -v`, `build/make_icon.py`,
 then pyinstaller. There is **no `pull_request` trigger** — tests run *after* merge, inside the
 release job, and every push to main publishes a public Release tagged `v1.0.<run_number>`.
-`npm test` is never run by CI. The published `.exe` is never executed before release.
+The published `.exe` is never executed before release.
 
 ## Non-negotiable invariants
 
@@ -59,7 +59,7 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
    produce `cred:{uuid}:password` / `cred:{uuid}:notes`. Never re-bind to `id`, `service_name`, or
    `username` — `update_credential` renames those. Never change the literal format: schema
    migrations exist (`db.migrate`, invariant 16) but they deliberately never touch ciphertext, and
-   the one rekey path (`Vault.rekey`, invariant 18) re-encrypts every secret under the **same**
+   the one rekey path (`Vault.rekey`, invariant 16) re-encrypts every secret under the **same**
    AAD — so changing the AAD format still makes every existing vault permanently undecryptable, and
    rekey does not rescue you (it preserves whatever format it finds). No test asserts the format
    itself; the suite stays green if you break it.
@@ -103,30 +103,20 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
     `db.connect` sets `PRAGMA foreign_keys = ON`, the sole thing preventing orphaned
     `password_history` rows — and `db.all_history` is an INNER JOIN, so orphaned ciphertext is
     invisible to `verify_integrity` forever. (`db.snapshot_bytes` raw-connects deliberately.)
-14. **`allowed_origins` stays a single pinned extension ID** (`browser_bridge.py:126`), equal to
-    the ID Chrome derives from `extension/manifest.json`'s `key`. A mismatch reports "✓ Connected"
-    while silently refusing every connection. Guarded by
-    `tests/test_views.py::test_pinned_extension_id_matches_the_committed_manifest_key`.
-    Never commit `extension/.keys/` — the private half lets anyone build an extension carrying the
-    ID the user's registered host already authorizes.
-15. **Nothing on the `--native-host` path writes to stdout except `_send`**, and `--native-host`
-    must dispatch before the Qt-pulling `.app` import in both `NoMorePwn.py` and
-    `nomorepwn_app/__main__.py`. Stray stdout corrupts the 4-byte-length frame stream; the only
-    symptom is a dropped browser connection.
-16. **A migration never touches `uuid`, `password_enc`, or `notes_enc`** (`db.py` `_MIGRATIONS`).
+14. **A migration never touches `uuid`, `password_enc`, or `notes_enc`** (`db.py` `_MIGRATIONS`).
     AAD is bound to the row's uuid, so rewriting any of the three makes every secret permanently
     undecryptable. The one sanctioned rewriter of those columns is a **rekey** (`rekey_credential`/
-    `rekey_history`, invariant 18), never a migration — and even it only ever decrypts-then-
+    `rekey_history`, invariant 16), never a migration — and even it only ever decrypts-then-
     re-encrypts under the *same* uuid-bound AAD. Adding a column is safe precisely because it
     touches none of them. Migrations must also be **idempotent** (guard on `credential_columns`),
     because they run on every unlock. Guarded by
     `tests/test_core.py::SchemaMigrationTests::test_unlock_migrates_and_secrets_still_decrypt`,
     which fails with `DecryptionError` the moment a migration rewrites a uuid.
-17. **`vault.migrate_schema` writes `<vault>.vN-premigration` before upgrading, and never deletes
+15. **`vault.migrate_schema` writes `<vault>.vN-premigration` before upgrading, and never deletes
     it.** It is the only recovery path if a migration corrupts the file — the user's other copy is
     an encrypted `.nmpbak` that needs this same app to open. Written with `db.snapshot_bytes`
     (SQLite's online-backup API), not a file copy, so it is never a torn page.
-18. **`Vault.rekey` is the repo's one rekey path** (recovery + change-master-password). It
+16. **`Vault.rekey` is the repo's one rekey path** (recovery + change-master-password). It
     re-encrypts every credential, note, and history row from the old key to a new one, preserving
     each row's uuid-bound AAD **verbatim** (invariant 1 — only the key changes), keeps the history
     row that mirrors the current password byte-identical to it (invariant 7), re-wraps the separate
@@ -207,7 +197,7 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   Launching a freshly built .exe while any NoMorePwn is running exits immediately with **no error
   and no output** — it looks exactly like a crash. Check `Get-Process NoMorePwn` before concluding
   a build is broken.
-- **`VERSION` (repo root) is the single source of truth** for the release version. After editing it run `python scripts/sync_version.py` then `python extension/build.py`; `tests/test_version.py` fails if any copy (nomorepwn/__init__.py, extension manifest/package/lock/dist, installer.iss default) drifts. `release.yml` reads it, refuses an existing tag, and the spec bakes it (env `NOMOREPWN_VERSION` may override). Bumping `VERSION` is the only step to cut a version; tagging/publishing stays a manual workflow run.
+- **`VERSION` (repo root) is the single source of truth** for the release version. After editing it run `python scripts/sync_version.py`; `tests/test_version.py` fails if any copy (`nomorepwn/__init__.py`, installer.iss default) drifts. `release.yml` reads it, refuses an existing tag, and the spec bakes it (env `NOMOREPWN_VERSION` may override). Bumping `VERSION` is the only step to cut a version; tagging/publishing stays a manual workflow run.
 - **The version is baked at build time** into `nomorepwn_app/_build_info.py` by the spec, and that
   file is gitignored. Never reintroduce `os.environ.get("NOMOREPWN_VERSION")` at module scope: it
   evaluates on the *user's* machine where the variable is unset, which is why every release
@@ -261,46 +251,6 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   a `LOWER+UPPER+DIGITS` pool — so the result can contain a symbol **outside its own pool**
   (reproduced). `required[:length]` also drops class guarantees at short lengths.
 
-**Extension** (`cd extension; npm test` — nothing else will catch you)
-- `pending-store.detach()` does **not** wipe; the caller owns `entry.holder` and must
-  `.finally(() => entry.holder.wipe())`. Prefer `discard()` unless you must await.
-- Detach synchronously *before* awaiting `subtle.decrypt`. The `if (!entry) return` after detach is
-  the exactly-once guard against a trailing 401 or the deadline double-resolving.
-- Register every `chrome.*` listener at module top level in `service-worker.js` — never in a
-  callback or after an `await`, or the worker misses the events that would have woken it.
-- `SecureCredentialHolder` is built via `create()` because construction is async
-  (`crypto.subtle.generateKey` is awaited). **`Object.create()` bypasses the constructor entirely,
-  so the `INTERNAL` token check never fires and you get an object with uninitialized `#key`/`#iv`/
-  `#ciphertext`.** Private fields are installed *only* by a real constructor call. This has already
-  happened once here.
-- SPAs do not get the 10s `WINDOW_MS` advertises — `VERIFICATION_WINDOW_MS = 5000` in the background
-  store hard-caps it. A verdict that never arrives (the deadline) no longer drops the credential:
-  `service-worker.js` `promptUnverified` hands it to the app as `{unverified:true}`, and the app's
-  learned per-origin policy (`nomorepwn/capture.py`, persisted to `capture_policy.json`) decides
-  save / ignore / ask-once. A 401/403 or SPA-error verdict is still a silent wipe (conclusive
-  failure, no prompt). The save/ask/ignore decision is the pure `capture.plan_capture`, tested in
-  `CapturePolicyTests`; the extension side is tested in `observer.test.mjs` §3.
-- `verifier.js` `LOGIN_ROUTE` is an unanchored substring regex (`/author/ofek` matches "auth").
-  `scoreResponse` never compares origins: third-party traffic in the tab contributes points, and a
-  401 from any subframe rejects the capture outright.
-- `capture.js` hardcodes its own copy of the message-type strings (content scripts are classic
-  scripts and cannot import) and has **zero** test coverage. Renaming a type in
-  `shared/messages.js` leaves all 52 checks green and the capture path dead.
-- The `content_scripts` `js` array is load-ordered: `spa-observer.js` must stay first.
-- The extension ships as **two per-browser builds** — Chrome and Firefox need different manifests
-  (`service_worker` + `key` vs `scripts` + `browser_specific_settings`), so no single folder loads
-  in both. `extension/build.py` writes them to `extension/dist/chrome` and `extension/dist/firefox`
-  (both committed and kept in sync); a source checkout loads those directly. A frozen build bundles
-  them **into** the .exe and materialises them to `%APPDATA%\NoMorePwn\extension\{chrome,firefox}`
-  at startup, version-stamped in `.version`. Not beside the .exe (onefile has no such folder) and
-  not `_MEIPASS` (a temp dir that changes every launch, which would break the loaded extension on
-  restart). `browser_bridge.extension_dir(browser)` is the one place that maps a browser to its
-  folder — Chromium (`Chrome`/`Edge`/`Brave`) → `chrome`, Firefox → `firefox`; anything else falls
-  back to `chrome`. `build/NoMorePwn.spec` **allowlists** what ships — `.js/.json/.css/.html` under
-  `extension/dist/<variant>` — and `extension/.keys/` lives outside `dist/` entirely (build.py
-  excludes it), so it is unreachable by construction rather than by an exclude list someone
-  maintains.
-
 ## How to verify a change here
 
 - **`nomorepwn/`** — `python -m unittest discover tests -v`. Vault/backup tests build a real
@@ -312,12 +262,6 @@ release job, and every push to main publishes a public Release tagged `v1.0.<run
   `QT_QPA_PLATFORM=offscreen` (set at import in that file, before `QApplication`), so views are
   constructible and assertable headlessly. Isolate by patching `config.DB_PATH`. For anything
   visual, actually run `python NoMorePwn.py` — but see the live-vault warning above.
-- **`extension/`** — `cd extension; npm test`. Sections share mutable globals and are strictly
-  order-dependent (the fake `chrome` must exist before `service-worker.js` is imported; ESM caches
-  it, so exactly one import per run). ~22s of that is real sleeps.
-- **Native host** — `NativeHostTests` covers `_read`/`_send`/`_handle`/`_vault_present` against
-  `io.BytesIO`. To exercise the real process, spawn it and speak the protocol: 4-byte LE length +
-  JSON on stdin, same on stdout.
 
 ## What to believe
 
@@ -327,14 +271,12 @@ Three rules, each earned by a bug in this repo rather than borrowed from general
   `except Exception: continue` and reported "No breached passwords found" — a false all-clear in a
   security tool. `leakcheck.ScanOutcome` now keeps `counts`, `failed`, and `complete` separate, and
   `LeakCheckError` exists so callers cannot confuse "didn't run" with "clean".
-- **Assert both directions of a boolean.** `native_host._vault_present()` returned False forever —
-  `config.VAULT_PATH` doesn't exist (it's `DB_PATH`) and `AttributeError` was swallowed by a broad
-  `except`. The test asserted only the False case against an empty sandbox, so it **passed for the
-  wrong reason**. Narrow your excepts; assert the True case too.
+- **Assert both directions of a boolean.** Prefer asserting both True and False outcomes for a
+  predicate; a test that only covers the False path can pass for the wrong reason.
 - **Put security decisions where they can be tested.** The false all-clear was unreachable because
   the logic lived in a Qt callback closure. Decision logic belongs in `nomorepwn/` as a pure
   function over explicit inputs; the view should only render its result.
 
-Enforcement is thin and unevenly distributed: several invariants above have **no test at all**, and
-`npm test` is outside CI. Do not infer from a green suite that an invariant is protected — check
-whether a test actually covers what you changed.
+Enforcement is thin and unevenly distributed: several invariants above have **no test at all**.
+Do not infer from a green suite that an invariant is protected — check whether a test actually
+covers what you changed.

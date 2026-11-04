@@ -942,8 +942,8 @@ class CredentialGroupUiTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
-class SettingsExtensionSectionTests(unittest.TestCase):
-    """The browser-extension card must report connection state truthfully."""
+class SettingsSectionTests(unittest.TestCase):
+    """Settings category nav and update panel (no browser-extension surface)."""
 
     def setUp(self):
         from nomorepwn_app import theme
@@ -966,16 +966,6 @@ class SettingsExtensionSectionTests(unittest.TestCase):
             get_vault=lambda: None,
         )
 
-    def test_settings_view_constructs_and_reports_extension_state(self):
-        from nomorepwn_app.view_settings import SettingsView
-        from nomorepwn_app import browser_bridge
-
-        view = SettingsView(self.ctx, on_change=lambda: None)
-        self.assertTrue(view.ext_status.text())
-        # The load-unpacked instructions must name the real folder, or the
-        # user is told to select a path that does not exist.
-        self.assertIn(str(browser_bridge.extension_dir(view.ext_browser.currentData())), view.ext_steps.text())
-
     def test_update_section_reports_the_running_version(self):
         from nomorepwn_app import __version__
         from nomorepwn_app.view_settings import SettingsView
@@ -992,40 +982,11 @@ class SettingsExtensionSectionTests(unittest.TestCase):
         view = SettingsView(self.ctx, on_change=lambda: None)
         # One nav row per stacked page, and every category is reachable.
         self.assertEqual(view.nav.count(), view.pages.count())
-        self.assertGreaterEqual(view.nav.count(), 6)
+        self.assertEqual(view.nav.count(), 6)
         labels = [view.nav.item(i).text().strip() for i in range(view.nav.count())]
-        for expected in ("Security", "Browser extension", "About"):
+        for expected in ("Security", "General", "Backups", "Recovery", "Updates", "About"):
             self.assertIn(expected, labels)
-
-    def test_setup_button_is_an_auto_install_action(self):
-        """The old 'Re-run setup' became a real install action."""
-        from nomorepwn_app.view_settings import SettingsView
-
-        view = SettingsView(self.ctx, on_change=lambda: None)
-        text = view.ext_setup_btn.text().lower()
-        self.assertIn("install", text)
-        self.assertNotIn("re-run setup", text)
-
-    def test_steps_name_the_selected_browsers_folder(self):
-        """Instructions must point at the per-browser dist folder, not a
-        single combined path that no browser can load."""
-        from nomorepwn_app.view_settings import SettingsView
-        from nomorepwn_app import browser_bridge
-
-        view = SettingsView(self.ctx, on_change=lambda: None)
-        # The default follows the user's browser; choose Chrome explicitly so
-        # the test does not depend on the host's registry/default browser.
-        view.ext_browser.setCurrentIndex(view.ext_browser.findData("Chrome"))
-        self.assertIn(str(browser_bridge.extension_dir("chrome")), view.ext_steps.text())
-
-        idx = view.ext_browser.findData("Firefox")
-        self.assertGreaterEqual(idx, 0, "Firefox must be offered as a target")
-        view.ext_browser.setCurrentIndex(idx)
-        self.assertIn(str(browser_bridge.extension_dir("Firefox")), view.ext_steps.text())
-        self.assertIn("Load Temporary Add-on", view.ext_steps.text())
-        self.assertIn("manifest.json", view.ext_steps.text())
-        self.assertNotIn("Developer mode", view.ext_steps.text())
-        self.assertNotIn("Load unpacked", view.ext_steps.text())
+        self.assertNotIn("Browser extension", labels)
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
@@ -1086,89 +1047,6 @@ class UpdateApplyOrderingTests(unittest.TestCase):
         mgr = UpdateManager(Settings())
         mgr.start()
         self.assertFalse(mgr._timer.isActive())
-
-
-@unittest.skipUnless(HAS_QT, "PySide6 not installed")
-class ExtensionIdTests(unittest.TestCase):
-    def test_pinned_extension_id_matches_the_committed_manifest_key(self):
-        """A mismatch reports "Connected" while refusing every connection."""
-        import base64
-        import hashlib
-        import json
-
-        from nomorepwn_app import browser_bridge
-
-        manifest = json.loads(
-            (Path(__file__).resolve().parent.parent / "extension" / "manifest.json")
-            .read_text(encoding="utf-8"))
-        der = base64.b64decode(manifest["key"])
-        derived = "".join(
-            chr(ord("a") + int(c, 16)) for c in hashlib.sha256(der).hexdigest()[:32])
-        self.assertEqual(derived, browser_bridge.EXTENSION_ID)
-
-
-@unittest.skipUnless(HAS_QT, "PySide6 not installed")
-class BrowserBridgePathTests(unittest.TestCase):
-    """Per-browser build selection, detection helpers, and load-page URLs.
-
-    These are the logic behind the extension-path fix: each browser must be
-    handed the build made for it, never the shared source tree.
-    """
-
-    def setUp(self):
-        from nomorepwn_app import browser_bridge
-        self.bridge = browser_bridge
-
-    def test_chromium_browsers_load_the_chrome_build(self):
-        for name in ("Chrome", "Edge", "Brave"):
-            self.assertEqual(self.bridge.variant_for(name), "chrome")
-        self.assertEqual(self.bridge.variant_for("Firefox"), "firefox")
-
-    def test_unknown_or_empty_browser_defaults_to_chrome(self):
-        self.assertEqual(self.bridge.variant_for(""), "chrome")
-        self.assertEqual(self.bridge.variant_for("Konqueror"), "chrome")
-
-    def test_extension_dir_points_at_the_committed_per_browser_builds(self):
-        chrome = self.bridge.extension_dir("Chrome")
-        firefox = self.bridge.extension_dir("Firefox")
-        self.assertEqual(chrome.name, "chrome")
-        self.assertEqual(firefox.name, "firefox")
-        self.assertNotEqual(chrome, firefox)
-        # From a source checkout these are the real dist folders on disk.
-        self.assertTrue((chrome / "manifest.json").is_file())
-        self.assertTrue((firefox / "manifest.json").is_file())
-
-    def test_each_build_carries_the_manifest_its_browser_requires(self):
-        import json
-
-        chrome = json.loads(
-            (self.bridge.extension_dir("Chrome") / "manifest.json").read_text("utf-8"))
-        firefox = json.loads(
-            (self.bridge.extension_dir("Firefox") / "manifest.json").read_text("utf-8"))
-        # Chrome wants a service_worker + the pinning key; Firefox wants scripts
-        # + gecko settings and no key.
-        self.assertIn("service_worker", chrome["background"])
-        self.assertIn("key", chrome)
-        self.assertIn("scripts", firefox["background"])
-        self.assertNotIn("key", firefox)
-        self.assertIn("browser_specific_settings", firefox)
-
-    def test_extensions_page_is_browser_appropriate(self):
-        self.assertEqual(self.bridge.extensions_page("Chrome"), "chrome://extensions")
-        self.assertEqual(self.bridge.extensions_page("Edge"), "chrome://extensions")
-        self.assertTrue(
-            self.bridge.extensions_page("Firefox").startswith("about:debugging"))
-
-    def test_default_browser_progid_mapping(self):
-        cases = {
-            "ChromeHTML": "Chrome",
-            "MSEdgeHTM": "Edge",
-            "BraveHTML": "Brave",
-            "FirefoxURL-308046B0AF4A39CB": "Firefox",
-            "AppXsomethingelse": None,
-        }
-        for prog_id, expected in cases.items():
-            self.assertEqual(self.bridge._browser_from_progid(prog_id), expected)
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
@@ -1322,156 +1200,6 @@ class RecoveryUiTests(unittest.TestCase):
         wrong = recovery.encode_recovery_code(recovery.generate_recovery_key())
         with self.assertRaises(recovery.RecoveryError):
             dlg.recover(kit["kit_bytes"], wrong, "", "long enough pw", "long enough pw")
-
-
-@unittest.skipUnless(HAS_QT, "PySide6 not installed")
-class CaptureConfirmDialogTests(unittest.TestCase):
-    """The modeless 'was this a login?' prompt's contract."""
-
-    def setUp(self):
-        from nomorepwn_app import theme
-        theme.set_active(theme.get_palette("dark"))
-
-    def test_decide_emits_the_choice_and_closes(self):
-        from PySide6.QtWidgets import QDialog
-        from nomorepwn_app.dialogs import CaptureConfirmDialog
-        from nomorepwn import capture
-
-        for choice in (capture.SAVE, capture.IGNORE):
-            dlg = CaptureConfirmDialog(None, "https://accounts.google.com", "alice")
-            seen: list[str] = []
-            dlg.decided.connect(seen.append)
-            dlg._decide(choice)
-            self.assertEqual(seen, [choice])
-            # QDialog.DialogCode.Accepted — never off the instance (PySide6 6.11).
-            self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
-
-
-@unittest.skipUnless(HAS_QT, "PySide6 not installed")
-class CaptureFlowTests(unittest.TestCase):
-    """End-to-end capture: verified saves, unverified asks, learning sticks.
-
-    Drives the real AppController IPC handler against a real unlocked vault so
-    the whole path — planner, policy, save, and the modeless confirm dialog —
-    is exercised, not just the pure pieces.
-    """
-
-    def setUp(self):
-        import tempfile
-        from nomorepwn_app import theme
-        from nomorepwn_app.controller import AppController
-
-        theme.set_active(theme.get_palette("dark"))
-        self._real_db = config_module.DB_PATH
-        self._real_data = config_module.DATA_DIR
-        tmp = Path(tempfile.mkdtemp())
-        config_module.DATA_DIR = tmp
-        config_module.DB_PATH = tmp / "vault.db"
-        vault.create_vault(config_module.DB_PATH, MASTER)
-
-        self.ctrl = AppController(_app)
-        self.vault = vault.Vault.unlock(config_module.DB_PATH, MASTER)
-        self.ctrl._on_vault_opened(self.vault)
-        self.ctrl.settings.capture_action = "silent"
-
-    def tearDown(self):
-        try:
-            self.vault.lock()
-        except Exception:
-            pass
-        config_module.DB_PATH = self._real_db
-        config_module.DATA_DIR = self._real_data
-
-    def _ipc(self, **msg) -> dict:
-        import json
-        msg["type"] = "save-credential"
-        from nomorepwn import ipc_auth
-        msg["token"] = ipc_auth.load_or_create_token()
-        return json.loads(self.ctrl.handle_ipc_message(json.dumps(msg).encode()).decode())
-
-    def _count(self) -> int:
-        return len(self.vault.list_credentials())
-
-    def test_locked_capture_is_rejected_without_retaining_password(self):
-        self.ctrl.lock(manual=True)
-        reply = self._ipc(verified=True, targetUrl="https://locked.example/login",
-                          username="audit-user", password=uuid.uuid4().hex)
-        self.assertEqual(reply["code"], "vault-locked")
-        self.assertIsNone(self.ctrl.vault)
-        self.assertFalse(hasattr(self.ctrl, "_pending_captures"))
-
-    def test_failed_capture_returns_an_error_instead_of_success(self):
-        reply = self._ipc(verified=True, targetUrl="https://example.com/login",
-                          username="invalid user", password=uuid.uuid4().hex)
-        self.assertEqual(reply["type"], "error")
-        self.assertEqual(reply["code"], "capture-not-saved")
-        self.assertEqual(self._count(), 0)
-
-    def test_capture_respects_disabled_notifications(self):
-        from unittest.mock import patch
-        self.ctrl.settings.show_notifications = False
-        with patch.object(self.ctrl.tray, "notify") as notify:
-            reply = self._ipc(verified=True, targetUrl="https://example.com/login",
-                              username="audit-user", password=uuid.uuid4().hex)
-        self.assertEqual(reply["type"], "ok")
-        notify.assert_not_called()
-
-    def test_verified_capture_saves_and_learns_the_origin(self):
-        from nomorepwn import capture
-
-        reply = self._ipc(verified=True, targetUrl="https://verified.example/login",
-                          username="u1", password="p1")
-        self.assertEqual(reply["type"], "ok")
-        self.assertEqual(self._count(), 1)
-        self.assertEqual(self.ctrl.capture_policy.decision("https://verified.example"),
-                         capture.SAVE)
-
-    def test_unverified_unknown_origin_asks_before_saving(self):
-        from nomorepwn import capture
-
-        reply = self._ipc(unverified=True, targetUrl="https://ask.example/login",
-                          username="u2", password="p2")
-        self.assertEqual(reply["type"], "ok")
-        # Nothing saved yet — a modeless confirm dialog is up.
-        self.assertEqual(self._count(), 0)
-        self.assertEqual(len(self.ctrl._capture_dialogs), 1)
-
-        dlg = next(iter(self.ctrl._capture_dialogs))
-        dlg._decide(capture.SAVE)
-        _app.processEvents()
-        self.assertEqual(self._count(), 1)
-        self.assertEqual(self.ctrl.capture_policy.decision("https://ask.example"),
-                         capture.SAVE)
-
-    def test_declining_the_prompt_learns_ignore_and_suppresses_future_captures(self):
-        from nomorepwn import capture
-
-        self._ipc(unverified=True, targetUrl="https://spam.example/login",
-                  username="u3", password="p3")
-        dlg = next(iter(self.ctrl._capture_dialogs))
-        dlg._decide(capture.IGNORE)
-        _app.processEvents()
-        self.assertEqual(self.ctrl.capture_policy.decision("https://spam.example"),
-                         capture.IGNORE)
-        self.assertEqual(self._count(), 0)
-
-        # A later capture on that origin is dropped, and the reply tells the
-        # extension to stop tracking it.
-        reply = self._ipc(unverified=True, targetUrl="https://spam.example/x",
-                          username="u4", password="p4")
-        self.assertEqual(reply.get("policy"), capture.IGNORE)
-        self.assertEqual(self._count(), 0)
-        self.assertEqual(len(self.ctrl._capture_dialogs), 0)
-
-    def test_a_blessed_origin_saves_even_when_unverified(self):
-        from nomorepwn import capture
-
-        self.ctrl.capture_policy.remember("https://blessed.example", capture.SAVE)
-        reply = self._ipc(unverified=True, targetUrl="https://blessed.example/login",
-                          username="u5", password="p5")
-        self.assertEqual(reply["type"], "ok")
-        self.assertEqual(self._count(), 1)
-        self.assertEqual(len(self.ctrl._capture_dialogs), 0, "a known origin must not re-prompt")
 
 
 if __name__ == "__main__":

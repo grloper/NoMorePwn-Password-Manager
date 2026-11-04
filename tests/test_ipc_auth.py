@@ -1,4 +1,4 @@
-"""Authentication of the local IPC channel between native host/app."""
+"""Authentication of the local IPC channel used for single-instance show."""
 import json
 import os
 import stat
@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from nomorepwn import config, ipc_auth
 
@@ -67,36 +67,6 @@ class TokenTests(_TempData):
         self.assertFalse(ipc_auth.verify(""))
 
 
-class NativeHostTokenTests(_TempData):
-    def _handle(self, sock):
-        from nomorepwn_app import native_host
-
-        with patch("PySide6.QtNetwork.QLocalSocket", return_value=sock), \
-             patch("PySide6.QtCore.QCoreApplication") as app_cls:
-            app_cls.instance.return_value = MagicMock()
-            return native_host._handle({"type": "save-credential", "password": "pw"})
-
-    def test_host_refuses_without_token_and_sends_nothing(self):
-        sock = MagicMock()
-        sock.waitForConnected.return_value = True
-        reply = self._handle(sock)
-        self.assertEqual(reply["code"], "ipc-no-token")
-        sock.write.assert_not_called()
-
-    def test_host_attaches_token(self):
-        tok = ipc_auth.load_or_create_token()
-        sock = MagicMock()
-        sock.waitForConnected.return_value = True
-        sock.bytesToWrite.return_value = 0
-        sock.bytesAvailable.return_value = 1
-        sock.readAll.return_value.data.return_value = b'{"type":"saved"}'
-        reply = self._handle(sock)
-        self.assertEqual(reply, {"type": "saved"})
-        sent = json.loads(sock.write.call_args[0][0])
-        self.assertEqual(sent["token"], tok)
-        self.assertEqual(sent["type"], "save-credential")
-
-
 try:
     from nomorepwn_app.controller import AppController
     HAS_QT = True
@@ -121,15 +91,12 @@ class ControllerAuthTests(_TempData):
 
     def test_unauthenticated_messages_are_rejected(self):
         for msg in (
-            {"type": "save-credential", "verified": True, "targetUrl": "https://a.example/",
-             "username": "u", "password": "p"},
             {"type": "show"},
             {"type": "show", "token": "wrong"},
-            {"type": "save-credential", "token": 123},
+            {"type": "show", "token": 123},
         ):
             self.assertEqual(self._send(json.dumps(msg).encode())["code"], "unauthorized")
         self.stub.show_window.assert_not_called()
-        self.stub._handle_capture.assert_not_called()
 
     def test_legacy_bare_show_is_rejected(self):
         self.assertEqual(self._send(b"show")["code"], "bad-json")
@@ -140,7 +107,6 @@ class ControllerAuthTests(_TempData):
         self.assertEqual(out, b"ok")
         self.stub.show_window.assert_called_once()
 
-    def test_authenticated_save_reaches_capture_handler(self):
-        self.stub._handle_capture.return_value = b'{"type":"ok"}'
+    def test_unknown_authenticated_type_is_ignored(self):
         out = self._call(json.dumps({"type": "save-credential", "token": self.token}).encode())
-        self.assertEqual(out, b'{"type":"ok"}')
+        self.assertIsNone(out)

@@ -1,2 +1,1 @@
 -r requirements.txt
-playwright==1.56.0

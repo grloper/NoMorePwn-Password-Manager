@@ -19,11 +19,6 @@ CLOSE_ASK = "ask"
 CLOSE_TRAY = "tray"   # lock + keep running in the background
 CLOSE_QUIT = "quit"   # lock + exit completely
 
-# Capture actions for browser extension credentials
-CAPTURE_SILENT = "silent"     # Save to "Captured Logins" and show a tray notification
-CAPTURE_PROMPT = "prompt"     # Bring window to foreground and show the editor
-CAPTURE_DISABLED = "disabled" # Ignore captured credentials entirely
-
 @dataclass
 class Settings:
     autolock_minutes: int = config.DEFAULT_AUTOLOCK_MINUTES
@@ -35,7 +30,6 @@ class Settings:
     clipboard_clear_seconds: int = 20      # auto-wipe copied secrets (0 = never)
     show_notifications: bool = True
     warn_unsaved_on_close: bool = True
-    capture_action: str = CAPTURE_SILENT   # CAPTURE_SILENT / CAPTURE_PROMPT / CAPTURE_DISABLED
 
     # -- Automatic encrypted backups ------------------------------------
     backup_enabled: bool = True

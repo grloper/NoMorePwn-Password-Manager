@@ -19,10 +19,10 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtWidgets import QApplication, QDialog
 
-from nomorepwn import capture, config, vault
+from nomorepwn import config, vault
 from nomorepwn.settings import CLOSE_ASK, CLOSE_QUIT, Settings
 
-from . import browser_bridge, startup, theme, workers
+from . import startup, theme, workers
 from .backup_manager import BackupManager
 from .update_manager import UpdateManager
 from .context import AppContext
@@ -48,10 +48,6 @@ class AppController(QObject):
         self.vault: vault.Vault | None = None
         self._quitting = False
         self._tray_hint_shown = False
-        # Per-origin "this is / isn't a login" memory, and live refs to any
-        # modeless capture prompts so they aren't garbage-collected mid-flight.
-        self.capture_policy = capture.CapturePolicy()
-        self._capture_dialogs: set = set()
 
         # Theme (palette first — it covers widgets the stylesheet can't reach)
         theme.set_active(theme.get_palette(self.settings.theme))
@@ -97,12 +93,6 @@ class AppController(QObject):
             lambda msg: self.ctx.toast.show(f"Backup failed: {msg}", "error", 5000))
         self.updates.update_ready.connect(self._on_update_ready)
         self.updates.start()
-
-        # Unpack the bundled browser extension to its stable directory. Cheap
-        # and version-stamped, so it is a no-op after the first launch on a
-        # given build — but it means the folder always exists when the user
-        # goes looking for it, and it refreshes itself after an update.
-        browser_bridge.ensure_extension_files()
 
         app.installEventFilter(self)
 
@@ -203,7 +193,7 @@ class AppController(QObject):
         self.window.activateWindow()
 
     def handle_ipc_message(self, data: bytes) -> bytes | None:
-        """Handle one authenticated IPC message: JSON carrying the install token."""
+        """Handle one authenticated IPC message from a second app launch (show)."""
         import json
 
         from nomorepwn import ipc_auth
@@ -219,150 +209,7 @@ class AppController(QObject):
         if msg.get("type") == "show":
             self.show_window()
             return b"ok"
-        if msg.get("type") != "save-credential":
-            return None
-        try:
-            return self._handle_capture(msg)
-        except Exception as e:  # never let an IPC error take down the app
-            return json.dumps({"type": "error", "code": "ipc-error", "message": str(e)}).encode("utf-8")
-
-    # -- browser credential capture -------------------------------------
-
-    @staticmethod
-    def _reply(payload: dict) -> bytes:
-        import json
-        return json.dumps(payload).encode("utf-8")
-
-    def _handle_capture(self, msg: dict) -> bytes:
-        """Route one captured credential through the learned policy + planner.
-
-        The decision (save / ask / ignore) is a pure function in
-        :mod:`nomorepwn.capture`; this method only executes it.
-        """
-        origin = capture.origin_of(msg.get("targetUrl", ""))
-        # New extension marks the ambiguous, prompt-fallback path with
-        # ``unverified``; a verified capture (or a legacy message with neither
-        # flag) is trusted.
-        verified = not bool(msg.get("unverified"))
-        decision = self.capture_policy.decision(origin)
-        plan = capture.plan_capture(
-            decision=decision,
-            capture_action=self.settings.capture_action,
-            verified=verified,
-        )
-
-        if plan == capture.PLAN_IGNORE:
-            reply = {"type": "ok"}
-            if decision == capture.IGNORE:
-                reply["policy"] = capture.IGNORE  # let the extension stop tracking it
-            return self._reply(reply)
-
-        # A locked vault must not retain new passwords in a plaintext queue.
-        # Ask the user to unlock and retry; the extension wipes its holder.
-        if self.vault is None:
-            self.window.show_unlock()
-            self._present_window()
-            self.ctx.toast.show("Unlock the vault, then sign in again to save this login.", "info", 6000)
-            return self._reply({"type": "error", "code": "vault-locked",
-                                "message": "Unlock NoMorePwn and retry the login."})
-
-        if plan == capture.PLAN_SAVE:
-            error = self._save_captured(msg, origin)
-            if error:
-                return self._reply({"type": "error", "code": "capture-not-saved", "message": error})
-            return self._reply({"type": "ok"})
-
-        if plan == capture.PLAN_EDITOR:
-            if self.window.has_unsaved():
-                return self._reply({"type": "error", "code": "editor-busy",
-                                    "message": "Please finish or discard your current edits first."})
-            self.capture_policy.remember(origin, capture.SAVE)
-            self._open_capture_editor(msg)
-            return self._reply({"type": "ok"})
-
-        # PLAN_CONFIRM: an origin we've never seen and couldn't verify — ask once.
-        self._ask_capture_confirmation(msg, origin)
-        return self._reply({"type": "ok"})
-
-    @staticmethod
-    def _capture_service_name(target_url: str) -> str:
-        from urllib.parse import urlparse
-        try:
-            return urlparse(target_url).netloc or target_url
-        except ValueError:
-            return target_url
-
-    def _save_captured(self, msg: dict, origin: str) -> str | None:
-        """Add a captured credential to Captured Logins and learn the origin."""
-        target_url = msg.get("targetUrl", "")
-        service_name = self._capture_service_name(target_url)
-        username = msg.get("username", "")
-        try:
-            # add_credential commits inside its own db.connect block; there is
-            # no Vault.save() (calling it threw and half-broke silent capture).
-            self.vault.add_credential(
-                service_name=service_name,
-                username=username,
-                password=msg.get("password", ""),
-                group_name="Captured Logins",
-                notes=f"Captured from {target_url}",
-            )
-        except (vault.VaultError, ValueError) as exc:
-            # A duplicate (VaultError) or a value the validators reject
-            # (ValidationError is a ValueError - e.g. an invalid username)
-            # is not fatal: surface it quietly rather than dropping to a generic
-            # IPC error the user never sees.
-            self.ctx.toast.show(f"Couldn't save capture: {exc}", "error", 4000)
-            return str(exc)
-
-        self.capture_policy.remember(origin, capture.SAVE)
-
-        self._notify(
-            "Credential Captured",
-            f"Saved {username} for {service_name} to Captured Logins.",
-        )
-
-        if self.window._shell and hasattr(self.window._shell, "vault_view"):
-            self.window._shell.vault_view.refresh()
-
-    def _open_capture_editor(self, msg: dict) -> None:
-        """Open the editor prefilled with a captured credential for review."""
-        self.show_window()
-        if not self.window._shell:
-            return
-        self.window._shell.goto_page(0)  # Items
-        self.window._shell.vault_view._add()
-        editor = self.window._shell.vault_view.editor
-        editor.service.setText(self._capture_service_name(msg.get("targetUrl", "")))
-        editor.username.setText(msg.get("username", ""))
-        editor.password.setText(msg.get("password", ""))
-        editor.group.setText("Captured Logins")
-        editor._update_strength()
-        editor._suggest_group_for_service()
-
-    def _ask_capture_confirmation(self, msg: dict, origin: str) -> None:
-        """Ask the user, modelessly, whether an unverified capture was a login."""
-        from .dialogs import CaptureConfirmDialog
-
-        dlg = CaptureConfirmDialog(self.window, origin, msg.get("username", ""))
-        self._capture_dialogs.add(dlg)
-
-        def on_decided(decision: str) -> None:
-            self.capture_policy.remember(origin, decision)
-            if decision != capture.SAVE:
-                return
-            if self.vault is not None:
-                self._save_captured(msg, origin)
-            else:
-                self._pending_captures.append(msg)
-                self.window.show_unlock()
-                self._present_window()
-
-        dlg.decided.connect(on_decided)
-        dlg.finished.connect(lambda _=0: self._capture_dialogs.discard(dlg))
-        self.show_window()
-        dlg.show()
-        dlg.raise_()
+        return None
 
     # ------------------------------------------------------------------
     # Close (X) handling

@@ -1,5 +1,4 @@
 """The repo-root VERSION file is the single source of truth for the release version."""
-import json
 import unittest
 from pathlib import Path
 
@@ -15,12 +14,6 @@ class VersionConsistencyTests(unittest.TestCase):
         import nomorepwn
 
         self.assertEqual(nomorepwn.__version__, VERSION)
-
-    def test_extension_manifest_and_package_match(self):
-        for rel in ("extension/manifest.json", "extension/package.json", "extension/dist/chrome/manifest.json",
-                    "extension/dist/firefox/manifest.json"):
-            data = json.loads((REPO / rel).read_text(encoding="utf-8"))
-            self.assertEqual(data["version"], VERSION, rel)
 
     def test_installer_default_matches(self):
         iss = (REPO / "build/installer.iss").read_text(encoding="utf-8")

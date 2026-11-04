@@ -18,7 +18,7 @@ This is a volunteer project, so no response-time SLA is promised. The intent is 
 
 ## Scope
 
-In scope: the vault and crypto code (`nomorepwn/`), the desktop app including local IPC and the updater (`nomorepwn_app/`), the browser extension and native messaging host (`extension/`), and the build/release workflows.
+In scope: the vault and crypto code (`nomorepwn/`), the desktop app including local single-instance IPC and the updater (`nomorepwn_app/`), and the build/release workflows.
 
 Out of scope: attacks that require an already-compromised, unlocked, same-user session (malware running as you, keyloggers, memory dumps), physical access to an unlocked machine, social engineering, and weaknesses in third-party dependencies that are not exploitable through this project (report those upstream).
 

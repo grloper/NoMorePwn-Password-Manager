@@ -4,7 +4,6 @@
 VERSION is the single source of truth. Usage:
     python scripts/sync_version.py            # rewrite derived files
     python scripts/sync_version.py --check    # exit 1 if any derived file is out of sync
-After changing VERSION, run this, then `python extension/build.py` (rebuilds extension/dist).
 Releases are created from VERSION by .github/workflows/release.yml; this script never tags or publishes.
 """
 from __future__ import annotations
@@ -21,9 +20,6 @@ if not re.fullmatch(r"\d+\.\d+\.\d+", VERSION):
 # (file, regex whose group 1 is the prefix and group 3 the suffix around the version)
 TARGETS = [
     ("nomorepwn/__init__.py", r'(__version__ = ")([^"]*)(")'),
-    ("extension/manifest.json", r'(^  "version": ")([^"]*)(")'),
-    ("extension/package.json", r'(^  "version": ")([^"]*)(")'),
-    ("extension/package-lock.json", r'(^  "version": ")([^"]*)(")'),
     ("build/installer.iss", r'(#define MyAppVersion ")([^"]*)(")'),
 ]
 

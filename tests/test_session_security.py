@@ -210,17 +210,6 @@ class SessionSecurityTests(unittest.TestCase):
         finally:
             crypto._argon2_raw = original
 
-    def test_native_frame_rejects_nonobject_json_and_continues(self):
-        import io
-        import struct
-        from nomorepwn_app import native_host
-        def framed(value):
-            payload = json.dumps(value).encode("utf-8")
-            return struct.pack("<I", len(payload)) + payload
-        stream = io.BytesIO(framed([]) + framed({"type": "ping"}))
-        self.assertEqual(native_host._handle(native_host._read(stream))["type"], "error")
-        self.assertEqual(native_host._read(stream), {"type": "ping"})
-
     def test_unlock_normalizes_tampered_metadata_without_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "vault.db"

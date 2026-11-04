@@ -147,7 +147,10 @@ HIBP never sees the password, its full hash, or whether anything
 matched — each prefix bucket contains hundreds of unrelated hashes
 (that's the *k* in k-anonymity). The `Add-Padding` header makes HIBP
 pad responses so response length can't fingerprint the bucket either.
-Checks run only when you click the button — never automatically.
+Checks run only when you click Scan-all or per-entry Re-check — never
+automatically on unlock. The vault stores only `breach_checked_at` and
+`breach_count` (0 = clean); both NULL means "Not checked". A password
+change clears both. 429 responses honour `Retry-After` (capped).
 
 ## 7. Automatic zero-knowledge backups
 

@@ -165,9 +165,11 @@ class CredentialDetail(QWidget):
         if notes:
             self._lay.addWidget(_Field("Notes", notes, self._ctx, copy_label="Notes copied"))
 
-        # -- Breach check --------------------------------------------
+        # -- Breach check (offline until the user asks) --------------
         breach_row = QHBoxLayout()
-        self.breach_btn = components.button("Check for breaches", "globe")
+        already = cred.get("breach_checked_at") is not None and cred.get("breach_count") is not None
+        self.breach_btn = components.button(
+            "Re-check for breaches" if already else "Check for breaches", "globe")
         self.breach_btn.clicked.connect(self._check_breach)
         breach_row.addWidget(self.breach_btn)
         self.breach_status = QLabel("")
@@ -175,8 +177,12 @@ class CredentialDetail(QWidget):
         breach_row.addWidget(self.breach_status, 1)
         breach_row.addStretch(1)
         self._lay.addLayout(breach_row)
+        self._apply_breach_status(
+            cred.get("breach_checked_at"),
+            cred.get("breach_count"),
+        )
 
-        note = QLabel("Only 5 characters of a hash are ever sent (k-anonymity). Your password never leaves this device.")
+        note = QLabel("Only 5 characters of a hash are ever sent (k-anonymity). Your password never leaves this device. The check runs only when you ask.")
         note.setObjectName("Faint")
         note.setWordWrap(True)
         self._lay.addWidget(note)
@@ -224,6 +230,21 @@ class CredentialDetail(QWidget):
 
     # ------------------------------------------------------------------
 
+    def _apply_breach_status(self, checked_at, count) -> None:
+        """Render persisted (or just-updated) HIBP status on the detail pane."""
+        p = theme.active()
+        if checked_at is None or count is None:
+            self.breach_status.setText(leakcheck.status_label(None, None))
+            self.breach_status.setStyleSheet(f"color:{p.text_muted};")
+            self.breach_status.setObjectName("Muted")
+        elif count:
+            self.breach_status.setText(
+                f"⚠  Found in {count:,} breaches — change it now · checked {checked_at[:10]}")
+            self.breach_status.setStyleSheet(f"color:{p.danger}; font-weight:700;")
+        else:
+            self.breach_status.setText(f"✓  Clean · checked {checked_at[:10]}")
+            self.breach_status.setStyleSheet(f"color:{p.success}; font-weight:700;")
+
     def _check_breach(self) -> None:
         vlt = self._get_vault()
         if not vlt or not self._cred:
@@ -234,21 +255,38 @@ class CredentialDetail(QWidget):
         cred_id = self._cred["id"]
 
         def work():
-            return leakcheck.check_password(vlt.reveal_password(cred_id))
+            count = leakcheck.check_password(vlt.reveal_password(cred_id))
+            vlt.record_breach_check(cred_id, count)
+            # Re-read so the UI shows the same timestamp the vault stored.
+            for c in vlt.list_credentials():
+                if c["id"] == cred_id:
+                    return c
+            return {"id": cred_id, "breach_count": count, "breach_checked_at": None}
 
-        def done(count):
+        def done(cred):
             self.breach_btn.setEnabled(True)
-            if count:
-                self.breach_status.setText(f"⚠  Found in {count:,} breaches — change it now")
-                self.breach_status.setStyleSheet(f"color:{p.danger}; font-weight:700;")
-            else:
-                self.breach_status.setText("✓  Not found in any known breach")
-                self.breach_status.setStyleSheet(f"color:{p.success}; font-weight:700;")
+            self.breach_btn.setText("Re-check for breaches")
+            if self._cred and self._cred.get("id") == cred_id:
+                self._cred["breach_count"] = cred.get("breach_count")
+                self._cred["breach_checked_at"] = cred.get("breach_checked_at")
+            self._apply_breach_status(
+                cred.get("breach_checked_at"), cred.get("breach_count"))
+            self.changed.emit()
 
         def err(exc):
             self.breach_btn.setEnabled(True)
-            self.breach_status.setText("Couldn't reach breach service (offline?)")
-            self.breach_status.setStyleSheet(f"color:{p.text_muted};")
+            # Leave any prior persisted status alone — a failed re-check is
+            # not a reason to erase a real earlier result.
+            if self._cred and self._cred.get("breach_checked_at") is not None:
+                self._apply_breach_status(
+                    self._cred.get("breach_checked_at"),
+                    self._cred.get("breach_count"),
+                )
+                self.breach_status.setText(
+                    self.breach_status.text() + "  ·  re-check failed (offline?)")
+            else:
+                self.breach_status.setText("Couldn't reach breach service (offline?)")
+                self.breach_status.setStyleSheet(f"color:{p.text_muted};")
 
         workers.run_async(work, done, err)
 

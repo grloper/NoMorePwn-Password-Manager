@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_meta (
@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS credentials (
     mfa_enabled     INTEGER NOT NULL DEFAULT 0 CHECK (mfa_enabled IN (0, 1)),
     group_name      TEXT    NOT NULL DEFAULT '',
     alt_login       TEXT    NOT NULL DEFAULT '',
+    breach_checked_at TEXT,
+    breach_count      INTEGER,
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     UNIQUE (service_name, username)
@@ -180,7 +182,24 @@ def _migrate_to_v3(conn: sqlite3.Connection) -> None:
         )
 
 
-_MIGRATIONS = {2: _migrate_to_v2, 3: _migrate_to_v3}
+def _migrate_to_v4(conn: sqlite3.Connection) -> None:
+    """v4: persisted HIBP breach-check status per credential.
+
+    Stores only the last-check timestamp and the HIBP occurrence count (0 =
+    clean, >0 = breached). Both NULL means never scanned — shown as
+    "Not checked". Never a password, never a hash of a password: the count is
+    metadata about a completed k-anonymity check, not a secret. Password
+    changes clear both columns so a stale result cannot outlive the password
+    it described.
+    """
+    cols = credential_columns(conn)
+    if "breach_checked_at" not in cols:
+        conn.execute("ALTER TABLE credentials ADD COLUMN breach_checked_at TEXT")
+    if "breach_count" not in cols:
+        conn.execute("ALTER TABLE credentials ADD COLUMN breach_count INTEGER")
+
+
+_MIGRATIONS = {2: _migrate_to_v2, 3: _migrate_to_v3, 4: _migrate_to_v4}
 
 
 def migrate(conn: sqlite3.Connection) -> tuple[int, int]:
@@ -313,11 +332,43 @@ def update_credential_password(
     password_sha256: str,
     now_iso: str,
 ) -> None:
+    # A new password invalidates any prior HIBP result for this row.
     conn.execute(
         "UPDATE credentials "
-        "SET password_enc = ?, password_sha256 = ?, updated_at = ? "
+        "SET password_enc = ?, password_sha256 = ?, updated_at = ?, "
+        "    breach_checked_at = NULL, breach_count = NULL "
         "WHERE id = ?",
         (password_enc, password_sha256, now_iso, cred_id),
+    )
+
+
+def set_breach_status(
+    conn: sqlite3.Connection,
+    cred_id: int,
+    checked_at_iso: str,
+    breach_count: int,
+) -> None:
+    """Record the outcome of a completed HIBP check for one credential.
+
+    ``breach_count`` is the HIBP occurrence count (0 = clean). Callers must
+    only invoke this after a check actually completed — never to mean "failed
+    / offline / cancelled".
+    """
+    conn.execute(
+        "UPDATE credentials "
+        "SET breach_checked_at = ?, breach_count = ? "
+        "WHERE id = ?",
+        (checked_at_iso, int(breach_count), cred_id),
+    )
+
+
+def clear_breach_status(conn: sqlite3.Connection, cred_id: int) -> None:
+    """Mark a credential as never-checked again (e.g. after a password change)."""
+    conn.execute(
+        "UPDATE credentials "
+        "SET breach_checked_at = NULL, breach_count = NULL "
+        "WHERE id = ?",
+        (cred_id,),
     )
 
 

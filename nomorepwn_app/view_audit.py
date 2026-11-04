@@ -90,10 +90,12 @@ class AuditView(QWidget):
         self._vault: vault.Vault | None = None
         self._report: dict | None = None
         # Findings from the last breach scan, kept independently of the report
-        # so a scan started before the first refresh isn't thrown away.
+        # so a scan started before the first refresh isn't thrown away. Also
+        # rebuilt from persisted vault columns on every refresh.
         self._breached: list[dict] = []
         # Bumped per scan so a stale worker can't clobber a newer one's results.
         self._scan_seq = 0
+        self._scan_cancel = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -113,6 +115,10 @@ class AuditView(QWidget):
         self.breach_btn = components.button("Scan all for breaches", "globe")
         self.breach_btn.clicked.connect(self._scan_breaches)
         header.addWidget(self.breach_btn)
+        self.cancel_btn = components.button("Cancel scan", object_name="Ghost")
+        self.cancel_btn.clicked.connect(self._cancel_scan)
+        self.cancel_btn.setVisible(False)
+        header.addWidget(self.cancel_btn)
         self._lay.addLayout(header)
 
         # Score + stats
@@ -151,24 +157,30 @@ class AuditView(QWidget):
 
     def set_vault(self, vlt: "vault.Vault | None") -> None:
         self._vault = vlt
-        # Findings belong to the vault they came from.
+        # Findings belong to the vault they came from. Bumping the sequence
+        # abandons any in-flight worker for the previous vault (its
+        # should_cancel sees seq != self._scan_seq).
         self._breached = []
         self._report = None
+        self._scan_seq += 1
+        self._reset_scan_button()
 
     def refresh(self) -> None:
         if self._vault is None:
             return
         vlt = self._vault
-        self.breach_btn.setEnabled(True)
+        if not self.cancel_btn.isVisible():
+            self.breach_btn.setEnabled(True)
 
         def work():
             creds = vlt.list_credentials()
+            # Prefer the durable per-entry status over an in-memory leftover
+            # from a previous session — vaults open offline without re-querying.
+            breached = leakcheck.breached_credentials(creds)
             report = {
                 "total": len(creds), "no_mfa": [], "stale": [], "weak": [],
                 "reused": [], "strengths": {},
-                # Carry forward the last scan's findings; a refresh must not
-                # quietly downgrade "breached" to zero.
-                "breached": list(self._breached),
+                "breached": breached,
             }
             seen: dict[str, list] = {}
             for c in creds:
@@ -191,7 +203,11 @@ class AuditView(QWidget):
                         report["reused"].append(c)
             return report
 
-        workers.run_async(work, self._render_report)
+        def done(report):
+            self._breached = list(report.get("breached") or [])
+            self._render_report(report)
+
+        workers.run_async(work, done)
 
     def _score(self, r: dict) -> int:
         if r["total"] == 0:
@@ -304,36 +320,56 @@ class AuditView(QWidget):
             return
 
         self.breach_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.cancel_btn.setEnabled(True)
+        self._scan_cancel = False
         self._scan_seq += 1
         seq = self._scan_seq
 
         def work():
             by_password: dict[str, list[dict]] = {}
-            unreadable = 0
+            stats = {"unreadable": 0, "checked": 0}
             for c in creds:
                 try:
                     by_password.setdefault(vlt.reveal_password(c["id"]), []).append(c)
                 except Exception:
-                    unreadable += 1
+                    stats["unreadable"] += 1
 
             def report(done_count: int, total: int) -> None:
                 QMetaObject.invokeMethod(
                     self, "_scan_progress", Qt.QueuedConnection,
                     Q_ARG(int, done_count), Q_ARG(int, total))
 
-            outcome = leakcheck.check_many(by_password, on_progress=report)
+            def persist(password: str, count: int) -> None:
+                for c in by_password[password]:
+                    try:
+                        vlt.record_breach_check(c["id"], count)
+                        stats["checked"] += 1
+                    except Exception:
+                        stats["unreadable"] += 1
 
-            breached: list[dict] = []
-            for pw, count in outcome.breached.items():
-                for c in by_password[pw]:
-                    c = dict(c)
-                    c["_breach_count"] = count
-                    breached.append(c)
+            outcome = leakcheck.check_many(
+                by_password,
+                on_progress=report,
+                on_checked=persist,
+                should_cancel=lambda: self._scan_cancel or seq != self._scan_seq,
+            )
 
-            # A password we couldn't check is not a password we cleared.
-            failed = sum(len(by_password[pw]) for pw in outcome.failed) + unreadable
-            return {"breached": breached, "failed": failed,
-                    "checked": len(creds) - failed}
+            # Re-read from the vault so the dashboard matches durable state,
+            # including rows checked on a previous (partial) scan.
+            latest = vlt.list_credentials()
+            breached = leakcheck.breached_credentials(latest)
+            failed = (
+                sum(len(by_password[pw]) for pw in outcome.failed)
+                + stats["unreadable"]
+            )
+            return {
+                "breached": breached,
+                "failed": failed,
+                "checked": stats["checked"],
+                "cancelled": outcome.cancelled,
+                "total": len(creds),
+            }
 
         def done(result):
             self._reset_scan_button()
@@ -353,12 +389,16 @@ class AuditView(QWidget):
 
             n = len(result["breached"])
             failed = result["failed"]
-            if failed and not result["checked"]:
+            if result.get("cancelled"):
+                self._ctx.toast.show(
+                    f"Scan cancelled — checked {result['checked']} of {result['total']}.",
+                    "info", 3600)
+            elif failed and not result["checked"]:
                 self._ctx.toast.show(
                     "Couldn't reach the breach service — nothing was checked.", "error", 4000)
             elif failed:
                 self._ctx.toast.show(
-                    f"Checked {result['checked']} of {len(creds)} — "
+                    f"Checked {result['checked']} of {result['total']} — "
                     f"{n} breached, {failed} couldn't be checked.", "error", 4600)
             else:
                 self._ctx.toast.show(
@@ -374,10 +414,21 @@ class AuditView(QWidget):
         self.breach_btn.setText("Scanning… 0/—")
         workers.run_async(work, done, err)
 
+    def _cancel_scan(self) -> None:
+        self._scan_cancel = True
+        self.cancel_btn.setEnabled(False)
+        self.breach_btn.setText("Cancelling…")
+
     def _reset_scan_button(self) -> None:
+        self._scan_cancel = False
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setEnabled(True)
         self.breach_btn.setEnabled(True)
         self.breach_btn.setText("Scan all for breaches")
 
     @Slot(int, int)
     def _scan_progress(self, done_count: int, total: int) -> None:
-        self.breach_btn.setText(f"Scanning… {done_count}/{total}")
+        if self._scan_cancel:
+            self.breach_btn.setText("Cancelling…")
+        else:
+            self.breach_btn.setText(f"Scanning… {done_count}/{total}")

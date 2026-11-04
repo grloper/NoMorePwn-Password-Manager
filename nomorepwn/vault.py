@@ -482,6 +482,8 @@ class Vault:
             )
             checksum = crypto.sha256_hex(blob)
             now = _now_iso()
+            # update_credential_password also clears breach_* — a new password
+            # must not inherit the previous one's HIBP result.
             db.update_credential_password(conn, cred_id, blob, checksum, now)
             db.insert_history(
                 conn,
@@ -489,6 +491,25 @@ class Vault:
                 password_enc=blob,
                 ciphertext_sha256=checksum,
                 changed_at_iso=now,
+            )
+
+    def record_breach_check(self, cred_id: int, count: int,
+                            checked_at: str | None = None) -> None:
+        """Persist the outcome of a completed HIBP check for one credential.
+
+        Stores only the occurrence count and a timestamp — never a password
+        and never a hash of one. Call only after ``leakcheck.check_password``
+        (or equivalent) actually returned; do not record failures or cancels
+        as clean/breached.
+        """
+        self._require_unlocked()
+        if count < 0:
+            raise VaultError("Breach count cannot be negative.")
+        with db.connect(self.db_path) as conn:
+            if db.get_credential(conn, cred_id) is None:
+                raise VaultError("Credential not found.")
+            db.set_breach_status(
+                conn, cred_id, checked_at or _now_iso(), int(count),
             )
 
     def update_credential(
@@ -804,14 +825,29 @@ class Vault:
     def _row_to_public(self, row) -> dict:
         self._require_unlocked()
         last_changed = self._last_changed(row["id"])
+        keys = row.keys()
+        # Both NULL = never scanned ("Not checked"). A partial row (one set,
+        # one not) is treated the same — absence of a complete result is not
+        # a clean bill of health.
+        if "breach_checked_at" in keys and "breach_count" in keys:
+            checked_at = row["breach_checked_at"]
+            count = row["breach_count"]
+            if checked_at is None or count is None:
+                checked_at, count = None, None
+            else:
+                count = int(count)
+        else:
+            checked_at, count = None, None
         return {
             "id": row["id"],
             "service_name": row["service_name"],
             "username": row["username"],
             # Defensive: a row read through a connection opened before the
             # migration ran has no such column.
-            "group_name": (row["group_name"] if "group_name" in row.keys() else ""),
-            "alt_login": (row["alt_login"] if "alt_login" in row.keys() else ""),
+            "group_name": (row["group_name"] if "group_name" in keys else ""),
+            "alt_login": (row["alt_login"] if "alt_login" in keys else ""),
+            "breach_checked_at": checked_at,
+            "breach_count": count,
             "mfa_enabled": bool(row["mfa_enabled"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

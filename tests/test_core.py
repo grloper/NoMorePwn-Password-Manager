@@ -217,6 +217,8 @@ class SchemaMigrationTests(unittest.TestCase):
         try:
             conn.execute("ALTER TABLE credentials DROP COLUMN group_name")
             conn.execute("ALTER TABLE credentials DROP COLUMN alt_login")
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_checked_at")
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_count")
             conn.execute("DELETE FROM vault_meta WHERE key = 'schema_version'")
             conn.commit()
         finally:
@@ -231,26 +233,46 @@ class SchemaMigrationTests(unittest.TestCase):
         conn = sqlite3.connect(str(self.path))
         try:
             conn.execute("ALTER TABLE credentials DROP COLUMN alt_login")
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_checked_at")
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_count")
             conn.execute("UPDATE vault_meta SET value = '2' WHERE key = 'schema_version'")
             conn.commit()
         finally:
             conn.close()
 
+    def _make_v3_vault(self) -> None:
+        """A vault from v3 (pre-breach-status), to test the v4 upgrade alone."""
+        vault.create_vault(self.path, MASTER)
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        vlt.add_credential("github.com", "alice", "s3cret-pass", alt_login="a@x.com")
+        vlt.lock()
+        conn = sqlite3.connect(str(self.path))
+        try:
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_checked_at")
+            conn.execute("ALTER TABLE credentials DROP COLUMN breach_count")
+            conn.execute("UPDATE vault_meta SET value = '3' WHERE key = 'schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_v1_upgrades_through_every_step_in_one_unlock(self):
-        """A vault two versions behind must not need two launches."""
+        """A vault several versions behind must not need multiple launches."""
         self._make_v1_vault()
         vlt = vault.Vault.unlock(self.path, MASTER)
         try:
             with db.connect(self.path) as conn:
                 cols = db.credential_columns(conn)
                 self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
-            self.assertIn("group_name", cols)   # from v2
-            self.assertIn("alt_login", cols)    # from v3
+            self.assertIn("group_name", cols)          # from v2
+            self.assertIn("alt_login", cols)           # from v3
+            self.assertIn("breach_checked_at", cols)   # from v4
+            self.assertIn("breach_count", cols)        # from v4
             self.assertEqual(vlt.verify_integrity(), [])
         finally:
             vlt.lock()
 
     def test_v2_vault_upgrades_to_v3_keeping_its_groups(self):
+        """v2 → current: groups survive; later columns land empty/NULL."""
         self._make_v2_vault()
         with db.connect(self.path) as conn:
             self.assertEqual(db.read_schema_version(conn), 2)
@@ -259,10 +281,29 @@ class SchemaMigrationTests(unittest.TestCase):
             cred = vlt.list_credentials()[0]
             self.assertEqual(cred["group_name"], "Development", "v2 data was lost")
             self.assertEqual(cred["alt_login"], "")
+            self.assertIsNone(cred["breach_count"])
             self.assertEqual(vlt.reveal_password(cred["id"]), "s3cret-pass")
         finally:
             vlt.lock()
         self.assertTrue(vault.pre_migration_backup_path(self.path, 2).exists())
+
+    def test_v3_vault_upgrades_to_v4_keeping_alt_login(self):
+        self._make_v3_vault()
+        with db.connect(self.path) as conn:
+            self.assertEqual(db.read_schema_version(conn), 3)
+            self.assertNotIn("breach_count", db.credential_columns(conn))
+        vlt = vault.Vault.unlock(self.path, MASTER)
+        try:
+            cred = vlt.list_credentials()[0]
+            self.assertEqual(cred["alt_login"], "a@x.com", "v3 data was lost")
+            self.assertIsNone(cred["breach_checked_at"])
+            self.assertIsNone(cred["breach_count"])
+            self.assertEqual(leakcheck.status_label(
+                cred["breach_checked_at"], cred["breach_count"]), "Not checked")
+            self.assertEqual(vlt.reveal_password(cred["id"]), "s3cret-pass")
+        finally:
+            vlt.lock()
+        self.assertTrue(vault.pre_migration_backup_path(self.path, 3).exists())
 
     def test_v1_vault_is_detected_as_version_1(self):
         self._make_v1_vault()
@@ -351,7 +392,11 @@ class SchemaMigrationTests(unittest.TestCase):
         vault.create_vault(self.path, MASTER)
         with db.connect(self.path) as conn:
             self.assertEqual(db.read_schema_version(conn), db.SCHEMA_VERSION)
-            self.assertIn("group_name", db.credential_columns(conn))
+            cols = db.credential_columns(conn)
+            self.assertIn("group_name", cols)
+            self.assertIn("alt_login", cols)
+            self.assertIn("breach_checked_at", cols)
+            self.assertIn("breach_count", cols)
 
 
 class CredentialGroupTests(unittest.TestCase):
@@ -1037,6 +1082,104 @@ class BulkLeakScanTests(unittest.TestCase):
         outcome = self._scan(["leaked", "unknown"])
         self.assertEqual(outcome.breached, {"leaked": 7})
         self.assertEqual(outcome.failed, {"unknown"})
+
+    def test_cancel_stops_without_marking_remaining_as_failed(self):
+        self._stub(lambda pw: 0)
+        cancel_after = {"n": 0}
+
+        def should_cancel():
+            # Cancel before the second unique password is attempted.
+            return cancel_after["n"] >= 1
+
+        def on_checked(password, count):
+            cancel_after["n"] += 1
+
+        outcome = leakcheck.check_many(
+            ["a", "b", "c"], delay=0, _sleep=lambda _s: None,
+            on_checked=on_checked, should_cancel=should_cancel)
+        self.assertTrue(outcome.cancelled)
+        self.assertEqual(outcome.counts, {"a": 0})
+        self.assertEqual(outcome.failed, set())
+        self.assertFalse(outcome.complete)
+
+    def test_on_checked_fires_only_for_successes(self):
+        self._stub(lambda pw: 3 if pw == "ok" else leakcheck.LeakCheckError("nope"))
+        seen = []
+        leakcheck.check_many(
+            ["ok", "bad"], delay=0, _sleep=lambda _s: None,
+            on_checked=lambda pw, n: seen.append((pw, n)))
+        self.assertEqual(seen, [("ok", 3)])
+
+    def test_status_label_never_scanned_is_not_checked(self):
+        self.assertEqual(leakcheck.status_label(None, None), "Not checked")
+        self.assertEqual(leakcheck.status_label(None, 0), "Not checked")
+        self.assertEqual(leakcheck.status_label("2024-01-02T00:00:00+00:00", None),
+                         "Not checked")
+
+    def test_status_label_clean_and_breached(self):
+        when = "2024-06-15T12:00:00+00:00"
+        self.assertEqual(leakcheck.status_label(when, 0), "Clean · checked 2024-06-15")
+        self.assertEqual(
+            leakcheck.status_label(when, 1500),
+            "Found in 1,500 breaches · checked 2024-06-15")
+
+    def test_breached_credentials_ignores_never_scanned_and_clean(self):
+        creds = [
+            {"id": 1, "breach_count": None, "service_name": "a"},
+            {"id": 2, "breach_count": 0, "service_name": "b"},
+            {"id": 3, "breach_count": 9, "service_name": "c"},
+        ]
+        out = leakcheck.breached_credentials(creds)
+        self.assertEqual([c["id"] for c in out], [3])
+        self.assertEqual(out[0]["_breach_count"], 9)
+
+
+class BreachStatusPersistenceTests(unittest.TestCase):
+    """Per-entry HIBP status survives unlock and clears on password change."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "vault.db"
+        vault.create_vault(self.db_path, MASTER)
+        self.vault = vault.Vault.unlock(self.db_path, MASTER)
+        self.addCleanup(self.tmp.cleanup)
+
+    def tearDown(self):
+        self.vault.lock()
+
+    def test_new_credential_is_not_checked(self):
+        cid = self.vault.add_credential("a.com", "u", "pw")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertIsNone(cred["breach_checked_at"])
+        self.assertIsNone(cred["breach_count"])
+        self.assertEqual(
+            leakcheck.status_label(cred["breach_checked_at"], cred["breach_count"]),
+            "Not checked")
+
+    def test_record_breach_check_persists_across_list(self):
+        cid = self.vault.add_credential("a.com", "u", "pw")
+        self.vault.record_breach_check(cid, 42, checked_at="2024-01-01T00:00:00+00:00")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["breach_count"], 42)
+        self.assertEqual(cred["breach_checked_at"], "2024-01-01T00:00:00+00:00")
+
+    def test_clean_result_is_distinguishable_from_never_scanned(self):
+        cid = self.vault.add_credential("a.com", "u", "pw")
+        self.vault.record_breach_check(cid, 0, checked_at="2024-01-01T00:00:00+00:00")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertEqual(cred["breach_count"], 0)
+        self.assertIsNotNone(cred["breach_checked_at"])
+        self.assertNotEqual(
+            leakcheck.status_label(cred["breach_checked_at"], cred["breach_count"]),
+            "Not checked")
+
+    def test_password_change_clears_breach_status(self):
+        cid = self.vault.add_credential("a.com", "u", "old-pw")
+        self.vault.record_breach_check(cid, 5, checked_at="2024-01-01T00:00:00+00:00")
+        self.vault.update_password(cid, "new-pw")
+        cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+        self.assertIsNone(cred["breach_checked_at"])
+        self.assertIsNone(cred["breach_count"])
 
 
 class VersionComparisonTests(unittest.TestCase):

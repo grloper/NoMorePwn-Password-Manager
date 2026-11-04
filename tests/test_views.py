@@ -383,6 +383,36 @@ class BreachScanTests(unittest.TestCase):
         self.assertTrue(self._pump(lambda: view.card_breached.value.text() == "1"),
                         "a refresh downgraded 'breached' back to zero")
 
+    def test_scan_persists_per_entry_status(self):
+        """Scan-all must write last-checked + count so a later unlock still knows."""
+        from nomorepwn_app.view_audit import AuditView
+
+        view = AuditView(self.ctx)
+        view.set_vault(self.vault)
+        view._scan_breaches()
+        self.assertTrue(
+            self._pump(lambda: view.breach_btn.text() == "Scan all for breaches"),
+            f"scan never finished — button stuck at {view.breach_btn.text()!r}")
+
+        by_service = {c["service_name"]: c for c in self.vault.list_credentials()}
+        self.assertEqual(by_service["a.com"]["breach_count"], 7)
+        self.assertIsNotNone(by_service["a.com"]["breach_checked_at"])
+        self.assertEqual(by_service["b.com"]["breach_count"], 0)
+        self.assertIsNotNone(by_service["b.com"]["breach_checked_at"])
+
+    def test_cancel_button_appears_while_scanning(self):
+        from nomorepwn_app.view_audit import AuditView
+
+        view = AuditView(self.ctx)
+        view.show()
+        view.set_vault(self.vault)
+        self.assertFalse(view.cancel_btn.isVisible())
+        view._scan_breaches()
+        self.assertTrue(view.cancel_btn.isVisible())
+        self.assertTrue(
+            self._pump(lambda: not view.cancel_btn.isVisible()),
+            "cancel button stayed visible after the scan finished")
+
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
 class CloseDialogTests(unittest.TestCase):

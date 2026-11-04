@@ -12,6 +12,7 @@ Privacy model — what actually crosses the network:
    entries so response size can't be used to fingerprint the prefix.
 
 The raw password never leaves this function's stack frame.
+Checks run only when the caller asks — never automatically on unlock.
 """
 
 from __future__ import annotations
@@ -106,13 +107,17 @@ class ScanOutcome:
     failed: set[str] = field(default_factory=set)
     """Passwords whose check did not complete (offline, rate-limited, …)."""
 
+    cancelled: bool = False
+    """True when the caller aborted mid-scan; remaining passwords are neither
+    in ``counts`` nor in ``failed`` — they were simply not attempted."""
+
     @property
     def breached(self) -> dict[str, int]:
         return {pw: n for pw, n in self.counts.items() if n}
 
     @property
     def complete(self) -> bool:
-        return not self.failed
+        return not self.failed and not self.cancelled
 
 
 def check_many(
@@ -120,6 +125,8 @@ def check_many(
     *,
     delay: float = BULK_DELAY_SECONDS,
     on_progress: Callable[[int, int], None] | None = None,
+    on_checked: Callable[[str, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
     _sleep: Callable[[float], None] = time.sleep,
 ) -> ScanOutcome:
     """Check many passwords, de-duplicating and pacing the requests.
@@ -129,19 +136,75 @@ def check_many(
     rate-limits us.
 
     A password that cannot be checked lands in ``failed``, never in
-    ``counts`` — callers must not treat it as clean.
+    ``counts`` — callers must not treat it as clean. A mid-scan cancel
+    leaves remaining passwords untouched (neither counted nor failed).
+
+    ``on_checked(password, count)`` fires after each successful check so
+    callers can persist immediately — a cancel must not wipe finished work.
     """
     unique = list(dict.fromkeys(passwords))
     outcome = ScanOutcome()
+    total = len(unique)
 
     for i, password in enumerate(unique):
+        if should_cancel and should_cancel():
+            outcome.cancelled = True
+            if on_progress:
+                on_progress(i, total)
+            break
         if i and delay:
             _sleep(delay)
+            if should_cancel and should_cancel():
+                outcome.cancelled = True
+                if on_progress:
+                    on_progress(i, total)
+                break
         try:
-            outcome.counts[password] = check_password(password)
+            count = check_password(password)
+            outcome.counts[password] = count
+            if on_checked:
+                on_checked(password, count)
         except Exception:  # noqa: BLE001 - any failure means "not checked"
             outcome.failed.add(password)
         if on_progress:
-            on_progress(i + 1, len(unique))
+            on_progress(i + 1, total)
 
     return outcome
+
+
+def status_label(checked_at: str | None, count: int | None) -> str:
+    """Human-readable per-entry breach status for the UI.
+
+    Never-scanned (either field missing) reads as "Not checked" — never as
+    clean. A completed check with count 0 is "Clean"; count > 0 names the
+    breach total. The date is the UTC calendar day of ``checked_at``.
+    """
+    if not checked_at or count is None:
+        return "Not checked"
+    when = checked_at[:10]
+    if count > 0:
+        return f"Found in {count:,} breaches · checked {when}"
+    return f"Clean · checked {when}"
+
+
+def breached_credentials(creds: Iterable[dict]) -> list[dict]:
+    """Credentials whose *persisted* HIBP count is positive.
+
+    Attaches ``_breach_count`` for the audit view. Entries that were never
+    scanned (NULL count) are excluded — absence of a result is not a clean
+    bill of health, and it is also not a breach finding.
+    """
+    out: list[dict] = []
+    for c in creds:
+        n = c.get("breach_count")
+        if n is None:
+            continue
+        try:
+            count = int(n)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            row = dict(c)
+            row["_breach_count"] = count
+            out.append(row)
+    return out

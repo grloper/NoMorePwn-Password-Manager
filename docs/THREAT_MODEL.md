@@ -1,4 +1,4 @@
-# Threat model
+﻿# Threat model
 
 Status: informal, written from a code review (2026-10) and the source. It is **not** an independent audit. Statements below describe the intended design and what the code currently does; they are not guarantees.
 
@@ -41,7 +41,7 @@ Status: informal, written from a code review (2026-10) and the source. It is **n
 
 **Local IPC.** Used by the native host and by a second app launch. Mitigated as above; messages are read in a single read, so very large messages may be truncated (reliability, not security).
 
-**Clipboard.** Copied passwords are cleared after a timeout only if the clipboard still holds the copied value. The app does not currently ask Windows clipboard history or cloud clipboard to exclude the content, so those features may retain copied passwords.
+**Clipboard.** Copied passwords are cleared after a timeout only if the clipboard still holds the copied value. Copies carry the Windows hints that exclude content from clipboard history, cloud clipboard and clipboard monitors (best-effort; apps that ignore the hints can still read the clipboard while it holds the value, and non-Windows platforms ignore them).
 
 **Auto-lock and sessions.** The desktop app auto-locks after inactivity. Re-keying revokes the old session.
 
@@ -55,3 +55,4 @@ Status: informal, written from a code review (2026-10) and the source. It is **n
 - Signed binaries and a signed update channel (planned, not done).
 - Independent audit, reproducible builds, SBOM/provenance.
 - Cross-platform packaged builds: only Windows builds are published.
+

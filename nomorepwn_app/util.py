@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import hashlib
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QByteArray, QMimeData, QObject, QTimer
 from PySide6.QtGui import QGuiApplication
+
+
+def secret_mime_data(text: str) -> QMimeData:
+    """Clipboard payload that asks Windows to keep the secret out of Win+V
+    clipboard history, cloud clipboard sync and clipboard-monitor tools.
+
+    These are the documented Windows formats (a DWORD 0 / 1). Other platforms
+    ignore the extra formats. Best-effort: apps that ignore the hints can still
+    read the clipboard while it holds the value.
+    """
+    mime = QMimeData()
+    mime.setText(text)
+    zero = QByteArray(b"\x00\x00\x00\x00")
+    one = QByteArray(b"\x01\x00\x00\x00")
+    mime.setData("ExcludeClipboardContentFromMonitorProcessing", one)
+    mime.setData("CanIncludeInClipboardHistory", zero)
+    mime.setData("CanUploadToCloudClipboard", zero)
+    return mime
 
 
 class ClipboardManager(QObject):
@@ -21,10 +39,15 @@ class ClipboardManager(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._wipe)
         self._pending: str | None = None
+        # The auto-wipe timer dies with the app, so wipe on quit too:
+        # a secret must not outlive the app on the clipboard.
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._wipe)
 
     def copy(self, text: str, clear_seconds: int = 20) -> None:
         clip = QGuiApplication.clipboard()
-        clip.setText(text)
+        clip.setMimeData(secret_mime_data(text))
         self._pending = text
         self._timer.stop()
         if clear_seconds and clear_seconds > 0:

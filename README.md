@@ -1,4 +1,4 @@
-# NoMorePwn
+﻿# NoMorePwn
 
 A local desktop password vault with groups, history, a password generator and browser login capture. Built with Python, PySide6, SQLite and a Chromium/Firefox extension. Browser autofill is not implemented.
 
@@ -28,7 +28,7 @@ Get-FileHash .\NoMorePwn-<version>-Setup.exe -Algorithm SHA256
 
 The checksum file is published in the same release as the binaries, so it detects corrupted downloads but does not protect against a compromised GitHub account or release. macOS and Linux have no packaged builds; run from source (below).
 
-See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the app does and does not defend against.
+See [docs/AUDIT.md](docs/AUDIT.md) for the latest code review (no critical or high issues found; medium gaps listed), [SECURITY.md](SECURITY.md) for reporting vulnerabilities and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the app does and does not defend against.
 
 ## Run from source
 
@@ -47,7 +47,7 @@ Install an extension build from `extension/dist/chrome` or `extension/dist/firef
 
 ## Executed evidence
 
-A Windows audit run passed 261 Python tests (the suite has since grown; the current `unittest` suite has 296 tests, 1 skipped on Linux, as run locally), 73 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled six local login fixtures: success, direct HTTP failure, cross-origin navigation, a redirect ending in HTTP 401, and multi-hop redirects ending at another origin or back at the login form. Its native API was intercepted for this browser test.
+A Windows audit run passed 261 Python tests (the suite has since grown; on 2026-11-03 the `unittest` suite ran 306 tests on Windows, all passing, 11 skipped), 73 extension observer assertions and five origin-boundary tests. A real isolated Chromium extension handled six local login fixtures: success, direct HTTP failure, cross-origin navigation, a redirect ending in HTTP 401, and multi-hop redirects ending at another origin or back at the login form. Its native API was intercepted for this browser test.
 
 A separate real native-host child communicated through Qt local IPC with the desktop controller and an encrypted disposable vault. Actual GUI unlock, saves, lock/re-unlock, failed-save acknowledgements and locked-capture rejection were exercised. This is component-chain evidence, not proof of a fully installed browser-to-desktop setup.
 
@@ -80,3 +80,4 @@ Headless GUI tests use `QT_QPA_PLATFORM=offscreen`. The integration scripts use 
 | Reproducible fixtures | `tests/`, `extension/tests/` |
 
 Installed browser registration, Firefox runtime behavior, packaged installer behavior, live breach/update providers and independent threat review remain unverified. Python strings can retain copies in memory; this project does not promise complete secret erasure or certified protection.
+

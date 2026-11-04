@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from nomorepwn import generator, strength
 
 from . import components, theme
+from .util import secret_mime_data
 
 
 class _Segmented(QWidget):
@@ -204,7 +205,7 @@ class GeneratorPanel(QWidget):
         if self._ctx is not None:
             self._ctx.copy_secret(secret, "Password copied")
         else:
-            QGuiApplication.clipboard().setText(secret)
+            QGuiApplication.clipboard().setMimeData(secret_mime_data(secret))
         self.copied.emit(secret)
 
     def _on_mode(self, idx: int) -> None:

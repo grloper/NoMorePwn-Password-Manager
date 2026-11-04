@@ -39,6 +39,11 @@ class ClipboardManager(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._wipe)
         self._pending: str | None = None
+        # The auto-wipe timer dies with the app, so wipe on quit too:
+        # a secret must not outlive the app on the clipboard.
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._wipe)
 
     def copy(self, text: str, clear_seconds: int = 20) -> None:
         clip = QGuiApplication.clipboard()

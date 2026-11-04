@@ -1,6 +1,6 @@
 ﻿# NoMorePwn
 
-A local desktop password vault with groups, history, and a password generator. Built with Python, PySide6 and SQLite. Offline by design aside from two optional network features (updates and HIBP breach checks).
+A local desktop password vault with groups, history, and a password generator. Built with Python, PySide6 and SQLite. Offline by design aside from three optional network features (updates, HIBP password checks, and a user-initiated public breach-catalog download that is matched locally).
 
 ![Actual desktop vault with fictional credentials](docs/images/vault.png)
 
@@ -43,7 +43,7 @@ python -m pip install -r requirements.txt
 python -m nomorepwn_app
 ```
 
-Set `NOMOREPWN_DATA` to a disposable directory before fixture runs. The app includes optional network features such as updates and breach checks; there is no browser extension or native-messaging host.
+Set `NOMOREPWN_DATA` to a disposable directory before fixture runs. The app includes optional network features such as updates, HIBP password checks, and a local breach-catalog refresh; there is no browser extension or native-messaging host.
 
 ## Tests
 

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from nomorepwn import config, leakcheck, strength, vault
+from nomorepwn import breachcatalog, config, leakcheck, strength, vault
 
 from . import components, icons, theme, workers
 from .components import Avatar, Pill, StrengthMeter
@@ -187,6 +187,9 @@ class CredentialDetail(QWidget):
         note.setWordWrap(True)
         self._lay.addWidget(note)
 
+        # -- Named service breaches (local catalog match, no network) -
+        self._render_service_breaches(cred["service_name"])
+
         self._lay.addWidget(components.divider())
 
         # -- History (collapsible) -----------------------------------
@@ -244,6 +247,68 @@ class CredentialDetail(QWidget):
         else:
             self.breach_status.setText(f"✓  Clean · checked {checked_at[:10]}")
             self.breach_status.setStyleSheet(f"color:{p.success}; font-weight:700;")
+
+    def _render_service_breaches(self, service_name: str) -> None:
+        """Show named breaches for this service domain from the local catalog.
+
+        Matching is on-device only. A missing catalog is not an error — the
+        vault works offline; the user refreshes the catalog from the dashboard.
+        """
+        p = theme.active()
+        catalog = breachcatalog.load_catalog()
+        hits = breachcatalog.match_service(service_name, catalog)
+
+        head = QLabel("Service breaches (local catalog)")
+        head.setStyleSheet(
+            f"color:{p.text_faint}; font-size:11px; font-weight:700;")
+        self._lay.addWidget(head)
+
+        if catalog is None:
+            empty = QLabel(
+                "No breach catalog cached yet. Use “Refresh breach catalog” "
+                "on the security dashboard — nothing about this vault is sent.")
+            empty.setObjectName("Faint")
+            empty.setWordWrap(True)
+            self._lay.addWidget(empty)
+            return
+
+        domain = breachcatalog.extract_domain(service_name)
+        if domain is None:
+            empty = QLabel(
+                "No domain in this service name, so it can’t be matched "
+                "against the breach catalog.")
+            empty.setObjectName("Faint")
+            empty.setWordWrap(True)
+            self._lay.addWidget(empty)
+            return
+
+        if not hits:
+            empty = QLabel(f"No known breaches for {domain} in the local catalog.")
+            empty.setObjectName("Muted")
+            empty.setWordWrap(True)
+            self._lay.addWidget(empty)
+            return
+
+        for breach in hits[:12]:
+            row = QVBoxLayout()
+            row.setSpacing(2)
+            title = QLabel(f"{breach.display_name}  ·  {breach.breach_date or 'unknown date'}")
+            title.setStyleSheet(f"color:{p.warning}; font-weight:700;")
+            row.addWidget(title)
+            if breach.data_classes:
+                classes = QLabel("Exposed: " + ", ".join(breach.data_classes))
+                classes.setObjectName("Muted")
+                classes.setWordWrap(True)
+                row.addWidget(classes)
+            self._lay.addLayout(row)
+        if len(hits) > 12:
+            more = QLabel(f"+{len(hits) - 12} more in catalog")
+            more.setObjectName("Faint")
+            self._lay.addWidget(more)
+        stale_note = QLabel(breachcatalog.status_label(catalog))
+        stale_note.setObjectName("Faint")
+        stale_note.setWordWrap(True)
+        self._lay.addWidget(stale_note)
 
     def _check_breach(self) -> None:
         vlt = self._get_vault()

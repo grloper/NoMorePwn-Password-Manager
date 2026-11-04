@@ -138,10 +138,72 @@ class ViewSmokeTests(unittest.TestCase):
         report = {
             "total": 1, "no_mfa": [], "stale": [], "weak": [],
             "reused": [], "strengths": {}, "breached": [],
+            "affected_services": [],
         }
         view._render_report(report)
         self.assertEqual(view.card_total.value.text(), "1")
         self.assertEqual(view.card_breached.value.text(), "0")
+
+    def test_audit_view_lists_services_affected_by_catalog_breaches(self):
+        from nomorepwn import breachcatalog
+        from nomorepwn_app.view_audit import AuditView
+
+        breach = breachcatalog.BreachInfo(
+            name="Adobe", title="Adobe", domain="adobe.com",
+            breach_date="2013-10-04",
+            data_classes=("Email addresses", "Passwords"),
+        )
+        cred = {
+            "id": 1, "service_name": "adobe.com", "username": "a@x.com",
+            "_service_breaches": [breach],
+        }
+        view = AuditView(self.ctx)
+        view.set_vault(self.vault)
+        report = {
+            "total": 1, "no_mfa": [], "stale": [], "weak": [],
+            "reused": [], "strengths": {}, "breached": [],
+            "affected_services": [cred],
+        }
+        view._render_report(report)
+        from PySide6.QtWidgets import QLabel
+
+        texts = [w.text() for w in view.issues_host.findChildren(QLabel)]
+        self.assertTrue(
+            any("Services in known breaches" in t for t in texts),
+            texts)
+        self.assertTrue(any("Adobe" in t for t in texts), texts)
+        self.assertTrue(any("2013-10-04" in t for t in texts), texts)
+
+    def test_detail_shows_named_service_breach_from_local_catalog(self):
+        from PySide6.QtWidgets import QLabel
+
+        from nomorepwn import breachcatalog
+        from nomorepwn_app.detail import CredentialDetail
+
+        # Catalog lives under DATA_DIR (not DB_PATH). Point it at the temp
+        # fixture dir so this never writes into the developer's live AppData.
+        real_data = config_module.DATA_DIR
+        config_module.DATA_DIR = Path(self.tmp)
+        try:
+            breachcatalog.save_catalog(
+                [breachcatalog.BreachInfo(
+                    name="Adobe", title="Adobe", domain="adobe.com",
+                    breach_date="2013-10-04",
+                    data_classes=("Email addresses", "Passwords", "Usernames"),
+                )],
+                fetched_at="2024-06-15T00:00:00+00:00",
+            )
+            cid = self.vault.add_credential("adobe.com", "alice", "pw-not-checked")
+            cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
+
+            pane = CredentialDetail(lambda: self.vault, self.ctx)
+            pane.show_credential(cred)
+            texts = [w.text() for w in pane.findChildren(QLabel)]
+            self.assertTrue(any("Adobe" in t for t in texts), texts)
+            self.assertTrue(any("2013-10-04" in t for t in texts), texts)
+            self.assertTrue(any("Passwords" in t for t in texts), texts)
+        finally:
+            config_module.DATA_DIR = real_data
 
     def test_audit_scan_with_no_credentials_does_not_start(self):
         from nomorepwn_app.view_audit import AuditView

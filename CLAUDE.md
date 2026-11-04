@@ -8,10 +8,12 @@ or native-messaging host.
 anyone who obtains a backup from cloud storage. Out of scope: memory dumps of the live process,
 malware running as the user, multi-user concurrency.
 
-The master key exists only in RAM on a live `Vault`. Exactly two modules touch the network:
-`nomorepwn/leakcheck.py` (HIBP, 5 hex chars out) and `nomorepwn/updater.py` (GitHub Releases +
-installer download). Adding a third is a threat-model change — update `README.md` and
-`docs/ARCHITECTURE.md` §1 in the same commit, both of which enumerate them.
+The master key exists only in RAM on a live `Vault`. Exactly three modules touch the network:
+`nomorepwn/leakcheck.py` (HIBP password range, 5 hex chars out),
+`nomorepwn/breachcatalog.py` (HIBP public breach list download — transmits nothing about the
+vault; matching is local), and `nomorepwn/updater.py` (GitHub Releases + installer download).
+Adding a fourth is a threat-model change — update `README.md` and `docs/ARCHITECTURE.md` §1 in
+the same commit, both of which enumerate them.
 
 ---
 
@@ -80,6 +82,11 @@ The published `.exe` is never executed before release.
    (`leakcheck.py:42-43`); the full-hash compare is local. `Add-Padding: true` (`leakcheck.py:27`)
    is part of the same defence — dropping it lets response size fingerprint the prefix. **Nothing
    tests either**: the retry tests stub `requests.get` with a lambda that discards the URL.
+6b. **`breachcatalog` may never send email, password, hash, or a domain filter.** The only
+   request is `GET https://haveibeenpwned.com/api/v3/breaches` with no query string. Matching of
+   vault `service_name` domains is local against the cached JSON. Refresh is user-initiated;
+   failed refresh must not delete or truncate the existing cache. Guaranteed by
+   `BreachCatalogTests` in `tests/test_core.py`.
 7. **Every password write appends a history row inside the same `db.connect` block** — including
    the first, from `add_credential`, sharing one `now` and one `checksum`. Miss it and
    `verify_integrity` false-alarms on every launch, and the credential drops out of the age audit.

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from nomorepwn import config, leakcheck, strength, vault
+from nomorepwn import breachcatalog, config, leakcheck, strength, vault
 
 from . import components, icons, theme, workers
 from .components import Avatar, Card
@@ -93,9 +93,14 @@ class AuditView(QWidget):
         # so a scan started before the first refresh isn't thrown away. Also
         # rebuilt from persisted vault columns on every refresh.
         self._breached: list[dict] = []
+        # Local HIBP catalog matches (service domain → named breaches). Never
+        # touches the network on its own — refresh is a separate user action.
+        self._affected_services: list[dict] = []
+        self._catalog: breachcatalog.Catalog | None = None
         # Bumped per scan so a stale worker can't clobber a newer one's results.
         self._scan_seq = 0
         self._scan_cancel = False
+        self._catalog_seq = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -112,6 +117,9 @@ class AuditView(QWidget):
         header = QHBoxLayout()
         header.addWidget(components.heading("Security dashboard", "H1"))
         header.addStretch(1)
+        self.catalog_btn = components.button("Refresh breach catalog", "download", "Ghost")
+        self.catalog_btn.clicked.connect(self._refresh_catalog)
+        header.addWidget(self.catalog_btn)
         self.breach_btn = components.button("Scan all for breaches", "globe")
         self.breach_btn.clicked.connect(self._scan_breaches)
         header.addWidget(self.breach_btn)
@@ -120,6 +128,11 @@ class AuditView(QWidget):
         self.cancel_btn.setVisible(False)
         header.addWidget(self.cancel_btn)
         self._lay.addLayout(header)
+
+        self.catalog_status = QLabel("")
+        self.catalog_status.setObjectName("Muted")
+        self.catalog_status.setWordWrap(True)
+        self._lay.addWidget(self.catalog_status)
 
         # Score + stats
         overview = QHBoxLayout()
@@ -161,9 +174,24 @@ class AuditView(QWidget):
         # abandons any in-flight worker for the previous vault (its
         # should_cancel sees seq != self._scan_seq).
         self._breached = []
+        self._affected_services = []
         self._report = None
         self._scan_seq += 1
+        self._catalog_seq += 1
         self._reset_scan_button()
+        self._load_catalog_status()
+
+    def _load_catalog_status(self) -> None:
+        """Read the on-disk catalog only — never hits the network."""
+        self._catalog = breachcatalog.load_catalog()
+        self.catalog_status.setText(breachcatalog.status_label(self._catalog))
+        p = theme.active()
+        if self._catalog is None:
+            self.catalog_status.setStyleSheet(f"color:{p.text_muted};")
+        elif self._catalog.is_stale:
+            self.catalog_status.setStyleSheet(f"color:{p.warning};")
+        else:
+            self.catalog_status.setStyleSheet(f"color:{p.text_muted};")
 
     def refresh(self) -> None:
         if self._vault is None:
@@ -171,16 +199,21 @@ class AuditView(QWidget):
         vlt = self._vault
         if not self.cancel_btn.isVisible():
             self.breach_btn.setEnabled(True)
+        self._load_catalog_status()
+        catalog = self._catalog
 
         def work():
             creds = vlt.list_credentials()
             # Prefer the durable per-entry status over an in-memory leftover
             # from a previous session — vaults open offline without re-querying.
             breached = leakcheck.breached_credentials(creds)
+            # Named breaches for service domains — local match against cache.
+            affected = breachcatalog.affected_services(creds, catalog)
             report = {
                 "total": len(creds), "no_mfa": [], "stale": [], "weak": [],
                 "reused": [], "strengths": {},
                 "breached": breached,
+                "affected_services": affected,
             }
             seen: dict[str, list] = {}
             for c in creds:
@@ -205,6 +238,7 @@ class AuditView(QWidget):
 
         def done(report):
             self._breached = list(report.get("breached") or [])
+            self._affected_services = list(report.get("affected_services") or [])
             self._render_report(report)
 
         workers.run_async(work, done)
@@ -239,6 +273,23 @@ class AuditView(QWidget):
 
         p = theme.active()
         any_issue = False
+        affected = r.get("affected_services") or self._affected_services
+        if affected:
+            any_issue = True
+            entries = []
+            for c in affected:
+                breaches = c.get("_service_breaches") or []
+                if not breaches:
+                    continue
+                # Name + date of the most recent match; data classes on hover text.
+                top = breaches[0]
+                detail = f"{top.display_name} · {top.breach_date or 'unknown date'}"
+                if len(breaches) > 1:
+                    detail += f" (+{len(breaches) - 1} more)"
+                entries.append((c, detail))
+            if entries:
+                self.issues_lay.addWidget(self._issue_card(
+                    "Services in known breaches", "globe", p.warning, entries))
         if r["breached"]:
             any_issue = True
             self.issues_lay.addWidget(self._issue_card(
@@ -425,6 +476,45 @@ class AuditView(QWidget):
         self.cancel_btn.setEnabled(True)
         self.breach_btn.setEnabled(True)
         self.breach_btn.setText("Scan all for breaches")
+
+    def _refresh_catalog(self) -> None:
+        """User-initiated public catalog download. Sends no vault data."""
+        self._catalog_seq += 1
+        seq = self._catalog_seq
+        self.catalog_btn.setEnabled(False)
+        self.catalog_status.setText("Downloading public breach catalog…")
+
+        def work():
+            return breachcatalog.refresh_catalog()
+
+        def done(catalog):
+            if seq != self._catalog_seq:
+                return
+            self.catalog_btn.setEnabled(True)
+            self._catalog = catalog
+            self.catalog_status.setText(breachcatalog.status_label(catalog))
+            p = theme.active()
+            self.catalog_status.setStyleSheet(
+                f"color:{p.warning};" if catalog.is_stale else f"color:{p.text_muted};")
+            n = len(catalog.breaches)
+            self._ctx.toast.show(
+                f"Breach catalog updated — {n:,} known breaches cached locally.",
+                "success", 3600)
+            # Re-match against vault entries without a password re-scan.
+            if self._vault is not None:
+                self.refresh()
+
+        def err(exc):
+            if seq != self._catalog_seq:
+                return
+            self.catalog_btn.setEnabled(True)
+            # Keep whatever was already on disk / in memory.
+            self._load_catalog_status()
+            self._ctx.toast.show(
+                "Couldn't refresh the breach catalog — previous cache kept.",
+                "error", 4000)
+
+        workers.run_async(work, done, err)
 
     @Slot(int, int)
     def _scan_progress(self, done_count: int, total: int) -> None:

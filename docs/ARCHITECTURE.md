@@ -13,19 +13,24 @@ one native desktop app, zero required network access.
    ciphertext container. Even with full read access to `vault.db`, an
    attacker learns service names and usernames at most — never
    passwords or notes. Write access is *detected* (tamper evidence).
-3. **Two narrow network paths, both enumerated.**
+3. **Three narrow network paths, all enumerated.**
    - `nomorepwn/leakcheck.py` — HIBP range query, transmits exactly 5 hex
      characters of a SHA-1. Opt-in, per action.
+   - `nomorepwn/breachcatalog.py` — HIBP public breach list download
+     (`GET /api/v3/breaches`). Transmits **nothing** about the user or the
+     vault (no email, password, hash, or domain query). Cached under the
+     data dir; matching of vault service domains is local-only. Refresh is
+     user-initiated; a failed refresh keeps the previous cache.
    - `nomorepwn/updater.py` — reads the GitHub Releases API and downloads a
      release installer. Transmits nothing about the user or the vault.
      Toggleable in Settings.
 
    Everything else is import-time provably offline. The updater is the
-   larger of the two surfaces: it fetches an executable and hands it to the
+   largest surface: it fetches an executable and hands it to the
    OS. See §10 for what its integrity check does and does not guarantee.
    Master-key recovery (§11), including its optional TOTP second factor
-   (`pyotp`, RFC 6238), is entirely offline and adds **no** third path — the
-   enumeration above stays at two. There is no browser extension or
+   (`pyotp`, RFC 6238), is entirely offline and adds **no** fourth path — the
+   enumeration above stays at three. There is no browser extension or
    native-messaging host; credentials enter the vault only through the desktop UI.
 
 ## 2. Component map
@@ -49,6 +54,7 @@ one native desktop app, zero required network access.
 
    side modules: strength.py (zxcvbn, offline)
                  leakcheck.py (HIBP k-anonymity, 5 hash chars out)
+                 breachcatalog.py (HIBP public breach list, local match)
 ```
 
 ## 3. Key derivation & the encryption lifecycle
@@ -151,6 +157,19 @@ Checks run only when you click Scan-all or per-entry Re-check — never
 automatically on unlock. The vault stores only `breach_checked_at` and
 `breach_count` (0 = clean); both NULL means "Not checked". A password
 change clears both. 429 responses honour `Retry-After` (capped).
+
+### Named breach details (local catalog)
+
+Separately from the password range query, the app can download the public
+HIBP breach catalog once (user clicks “Refresh breach catalog”) and cache
+it as `breach_catalog.json` under the data directory. Vault
+`service_name` values are then matched **on device** against each
+breach’s `Domain`. Per entry the UI shows breach name, breach date, and
+data classes exposed; the dashboard lists affected services. No email,
+password, or hash leaves the machine for this path — the GET has no
+query string. Offline unlock and vault use never require the catalog; a
+failed refresh leaves the prior cache in place and labels it stale when
+older than 30 days.
 
 ## 7. Automatic zero-knowledge backups
 

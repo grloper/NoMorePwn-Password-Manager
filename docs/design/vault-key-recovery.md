@@ -164,10 +164,9 @@ inside the already-unlocked app**:
 The TOTP seed is stored **encrypted under `K`** in `vault_meta`
 (`aad="vault:totp-seed"`), so it is usable *only while unlocked* — which is
 exactly the gate's scope (you can only export a kit while unlocked). `pyotp` is
-**offline**: no network call, so this adds **no third network path** — the
-"exactly two outbound requests" enumeration in `README.md` /
-`docs/ARCHITECTURE.md` §1 stays true (and CLAUDE.md's "exactly two modules
-touch the network" is unchanged).
+**offline**: no network call, so this adds **no fourth network path** — the
+enumerated outbound modules in `README.md` / `docs/ARCHITECTURE.md` §1
+stay unchanged (and CLAUDE.md's network-module count is unchanged).
 
 **Honest assurance rating.** Once the session is unlocked the attacker already
 holds `K` and can reveal every password or write a backup, so a TOTP gate on

@@ -18,8 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nomorepwn import (
-    backup, crypto, generator, groups, leakcheck, recovery, strength, updater,
-    validation, vault,
+    backup, breachcatalog, crypto, generator, groups, leakcheck, recovery,
+    strength, updater, validation, vault,
 )
 from nomorepwn import config as config_module
 from nomorepwn import db as db_layer
@@ -1180,6 +1180,164 @@ class BreachStatusPersistenceTests(unittest.TestCase):
         cred = next(c for c in self.vault.list_credentials() if c["id"] == cid)
         self.assertIsNone(cred["breach_checked_at"])
         self.assertIsNone(cred["breach_count"])
+
+
+class BreachCatalogTests(unittest.TestCase):
+    """Local HIBP breach catalog: download/cache/match without leaking vault data."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "breach_catalog.json"
+        self.addCleanup(self.tmp.cleanup)
+
+    def _sample_raw(self):
+        return [
+            {
+                "Name": "Adobe",
+                "Title": "Adobe",
+                "Domain": "adobe.com",
+                "BreachDate": "2013-10-04",
+                "DataClasses": ["Email addresses", "Password hints", "Passwords", "Usernames"],
+            },
+            {
+                "Name": "LinkedIn",
+                "Title": "LinkedIn",
+                "Domain": "linkedin.com",
+                "BreachDate": "2012-05-05",
+                "DataClasses": ["Email addresses", "Passwords"],
+            },
+            {
+                "Name": "NoDomain",
+                "Title": "No Domain Breach",
+                "Domain": "",
+                "BreachDate": "2020-01-01",
+                "DataClasses": ["Email addresses"],
+            },
+        ]
+
+    def _catalog(self, fetched_at="2024-06-15T12:00:00+00:00"):
+        breaches = breachcatalog.parse_breaches(self._sample_raw())
+        return breachcatalog.save_catalog(breaches, self.path, fetched_at=fetched_at)
+
+    def test_extract_domain_from_hosts_and_urls(self):
+        self.assertEqual(breachcatalog.extract_domain("adobe.com"), "adobe.com")
+        self.assertEqual(breachcatalog.extract_domain("https://www.Adobe.com/account"),
+                         "adobe.com")
+        self.assertEqual(breachcatalog.extract_domain("Adobe (adobe.com)"), "adobe.com")
+        self.assertEqual(breachcatalog.extract_domain("mail.google.com"), "mail.google.com")
+        self.assertIsNone(breachcatalog.extract_domain("Adobe"))
+        self.assertIsNone(breachcatalog.extract_domain(""))
+        self.assertIsNone(breachcatalog.extract_domain("Shopify (inactive account)"))
+
+    def test_domains_match_allows_subdomains(self):
+        self.assertTrue(breachcatalog.domains_match("adobe.com", "adobe.com"))
+        self.assertTrue(breachcatalog.domains_match("www.adobe.com", "adobe.com"))
+        self.assertTrue(breachcatalog.domains_match("account.adobe.com", "adobe.com"))
+        self.assertFalse(breachcatalog.domains_match("notadobe.com", "adobe.com"))
+        self.assertFalse(breachcatalog.domains_match("adobe.com", ""))
+
+    def test_match_service_is_local_only(self):
+        catalog = self._catalog()
+        hits = breachcatalog.match_service("https://account.adobe.com", catalog)
+        self.assertEqual([h.name for h in hits], ["Adobe"])
+        self.assertEqual(hits[0].breach_date, "2013-10-04")
+        self.assertIn("Passwords", hits[0].data_classes)
+        self.assertEqual(breachcatalog.match_service("Adobe", catalog), [])
+        self.assertEqual(breachcatalog.match_service("linkedin.com", None), [])
+
+    def test_format_breach_detail_includes_name_date_classes(self):
+        catalog = self._catalog()
+        detail = breachcatalog.format_breach_detail(catalog.breaches[0])
+        self.assertIn("Adobe", detail)
+        self.assertIn("2013-10-04", detail)
+        self.assertIn("Passwords", detail)
+
+    def test_affected_services_lists_matching_entries(self):
+        catalog = self._catalog()
+        creds = [
+            {"id": 1, "service_name": "adobe.com", "username": "a"},
+            {"id": 2, "service_name": "Local Bank", "username": "b"},
+            {"id": 3, "service_name": "linkedin.com", "username": "c"},
+        ]
+        out = breachcatalog.affected_services(creds, catalog)
+        self.assertEqual([c["id"] for c in out], [1, 3])
+        self.assertEqual(out[0]["_service_breaches"][0].name, "Adobe")
+        self.assertEqual(out[1]["_service_breaches"][0].name, "LinkedIn")
+
+    def test_status_label_marks_missing_and_stale(self):
+        from datetime import datetime, timezone, timedelta
+
+        self.assertIn("No breach catalog", breachcatalog.status_label(None))
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fresh = self._catalog(fetched_at=now.isoformat())
+        self.assertEqual(
+            breachcatalog.status_label(fresh, now=now),
+            "Catalog updated 2024-06-15")
+
+        old = (now - timedelta(days=breachcatalog.STALE_AFTER_DAYS + 1)).isoformat()
+        stale = breachcatalog.Catalog(
+            breaches=fresh.breaches, fetched_at=old, path=self.path)
+        self.assertEqual(
+            breachcatalog.status_label(stale, now=now),
+            f"Catalog updated {old[:10]} (stale — refresh recommended)")
+
+    def test_load_returns_none_when_missing(self):
+        self.assertIsNone(breachcatalog.load_catalog(self.path))
+
+    def test_refresh_writes_cache_and_failed_refresh_keeps_old(self):
+        import requests
+
+        class _Ok:
+            status_code = 200
+            content = json.dumps(self._sample_raw()).encode("utf-8")
+
+            def raise_for_status(self):
+                return None
+
+        class _SessionOk:
+            def get(self, url, headers=None, timeout=None):
+                self.url = url
+                self.headers = headers
+                return _Ok()
+
+        session = _SessionOk()
+        catalog = breachcatalog.refresh_catalog(self.path, session=session)
+        self.assertEqual(session.url, breachcatalog.HIBP_BREACHES_URL)
+        self.assertEqual(len(catalog.breaches), 3)
+        self.assertTrue(self.path.exists())
+        loaded = breachcatalog.load_catalog(self.path)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(len(loaded.breaches), 3)
+
+        class _FailSession:
+            def get(self, url, headers=None, timeout=None):
+                raise requests.ConnectionError("offline")
+
+        before = self.path.read_text(encoding="utf-8")
+        with self.assertRaises(breachcatalog.CatalogError):
+            breachcatalog.refresh_catalog(self.path, session=_FailSession())
+        self.assertEqual(self.path.read_text(encoding="utf-8"), before)
+
+    def test_download_url_has_no_vault_query(self):
+        """The public list endpoint must not carry domain/email/password params."""
+        class _Ok:
+            status_code = 200
+            content = b"[]"
+
+            def raise_for_status(self):
+                return None
+
+        class _Session:
+            def get(self, url, headers=None, timeout=None):
+                self.url = url
+                return _Ok()
+
+        session = _Session()
+        breachcatalog.download_breaches(session=session)
+        self.assertEqual(session.url, "https://haveibeenpwned.com/api/v3/breaches")
+        self.assertNotIn("?", session.url)
+        self.assertNotIn("domain=", session.url.lower())
+        self.assertNotIn("email=", session.url.lower())
 
 
 class VersionComparisonTests(unittest.TestCase):

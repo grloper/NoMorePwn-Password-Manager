@@ -81,3 +81,7 @@ Headless GUI tests use `QT_QPA_PLATFORM=offscreen`. The integration scripts use 
 
 Installed browser registration, Firefox runtime behavior, packaged installer behavior, live breach/update providers and independent threat review remain unverified. Python strings can retain copies in memory; this project does not promise complete secret erasure or certified protection.
 
+
+## License
+
+NoMorePwn is open source under the [MIT License](LICENSE). Copyright (c) 2026 Ofek Ventura.

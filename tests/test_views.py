@@ -59,6 +59,10 @@ def tearDownModule() -> None:
         return
     import gc
 
+    # Copies now hand the clipboard a QMimeData (secret_mime_data); release it
+    # while the QApplication is alive or Qt crashes freeing it at exit.
+    _app.clipboard().clear()
+
     # Every AppController installs an application-wide event filter that
     # touches its window; detach them before the windows are destroyed.
     from nomorepwn_app.controller import AppController

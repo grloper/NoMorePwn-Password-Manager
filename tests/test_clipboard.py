@@ -1,4 +1,4 @@
-﻿"""Clipboard handling for copied secrets."""
+"""Clipboard handling for copied secrets."""
 import os
 import unittest
 
@@ -14,6 +14,24 @@ class ClipboardTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    @classmethod
+    def tearDownClass(cls):
+        # Don't leave our QMimeData on the clipboard or a strong reference to the
+        # QApplication: either makes Qt teardown crash at interpreter exit.
+        import gc
+
+        cls.app.clipboard().clear()
+        cls.app.processEvents()
+        cls.app = None
+        gc.collect()
+
+    def tearDown(self):
+        cm = getattr(self, "_cm", None)
+        if cm is not None:
+            cm.deleteLater()
+            self._cm = None
+        QApplication.sendPostedEvents(None, 0)
+
     def test_mime_excludes_from_history_and_cloud(self):
         m = secret_mime_data("hunter2-secret")
         self.assertEqual(m.text(), "hunter2-secret")
@@ -22,7 +40,7 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(bytes(m.data("ExcludeClipboardContentFromMonitorProcessing")), b"\1\0\0\0")
 
     def test_copy_then_wipe_only_if_unchanged(self):
-        cm = ClipboardManager()
+        cm = self._cm = ClipboardManager()
         cm.copy("abc-secret", 0)
         self.assertEqual(self.app.clipboard().text(), "abc-secret")
         cm._wipe()
